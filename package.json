@@ -1,0 +1,8 @@
+{
+  "name": "tts-service",
+  "version": "1.0.0",
+  "description": "Standalone Piper TTS Service",
+  "scripts": {
+    "deploy": "bash deploy.sh"
+  }
+}

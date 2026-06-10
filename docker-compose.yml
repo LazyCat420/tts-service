@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  tts-service:
+    image: tts-service:latest
+    container_name: tts-service
+    restart: unless-stopped
+    environment:
+      - TZ=America/Los_Angeles
+    ports:
+      - "3032:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
