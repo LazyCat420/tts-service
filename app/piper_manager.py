@@ -1,7 +1,7 @@
 import os
 import io
 import wave
-from typing import Dict
+from typing import Dict, List
 import time
 
 try:
@@ -14,9 +14,13 @@ except ImportError:
 class PiperTTSManager:
     def __init__(self, models_dir: str = None):
         if models_dir is None:
-            models_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "piper_models")
+            # Allow override via environment variable for volume-mounted models
+            models_dir = os.environ.get(
+                "PIPER_MODELS_DIR",
+                os.path.join(os.path.dirname(__file__), "..", "data", "piper_models")
+            )
         self.models_dir = os.path.abspath(models_dir)
-        self.voices: Dict[str, PiperVoice] = {}
+        self.voices: Dict[str, "PiperVoice"] = {}
         
         # We define a few fallback mapping aliases for the downloaded voices
         self.aliases = {
@@ -25,6 +29,10 @@ class PiperTTSManager:
             "en-GB": "en_GB-alan-medium",
             "default": "en_US-lessac-medium"
         }
+        
+        print(f"[PiperTTS] Models directory: {self.models_dir}")
+        available = self.list_voices()
+        print(f"[PiperTTS] Found {len(available)} voice models on disk")
 
     def _get_model_path(self, voice_name: str) -> str:
         """Resolves alias and returns path to the ONNX model"""
@@ -32,7 +40,9 @@ class PiperTTSManager:
         # If the requested voice_name doesn't exist locally, fallback to default
         onnx_path = os.path.join(self.models_dir, f"{name}.onnx")
         if not os.path.exists(onnx_path):
-            name = self.aliases["default"]
+            fallback = self.aliases["default"]
+            print(f"[PiperTTS] WARNING: Model '{name}' not found at {onnx_path}, falling back to '{fallback}'")
+            name = fallback
             onnx_path = os.path.join(self.models_dir, f"{name}.onnx")
         return onnx_path, name
 
@@ -52,7 +62,7 @@ class PiperTTSManager:
             
         print(f"[PiperTTS] Loading voice into memory: {resolved_name}...")
         t0 = time.time()
-        voice = PiperVoice(load_path=onnx_path, config_path=json_path)
+        voice = PiperVoice.load(model_path=onnx_path, config_path=json_path)
         self.voices[resolved_name] = voice
         print(f"[PiperTTS] Loaded {resolved_name} in {time.time() - t0:.2f}s")
         return voice
@@ -67,6 +77,20 @@ class PiperTTSManager:
             voice.synthesize(text, wav_file)
             
         return wav_io.getvalue()
+
+    def list_voices(self) -> List[str]:
+        """Returns a sorted list of available voice model names on disk"""
+        voices = []
+        if not os.path.isdir(self.models_dir):
+            return voices
+        for f in os.listdir(self.models_dir):
+            if f.endswith(".onnx") and not f.endswith(".onnx.json"):
+                # Check that the companion .json config also exists
+                json_path = os.path.join(self.models_dir, f + ".json")
+                if os.path.exists(json_path):
+                    voices.append(f[:-5])  # Strip .onnx extension
+        voices.sort()
+        return voices
 
 # Singleton instance
 tts_manager = PiperTTSManager()

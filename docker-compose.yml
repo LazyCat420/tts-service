@@ -7,6 +7,9 @@ services:
     restart: unless-stopped
     environment:
       - TZ=America/Los_Angeles
+      - PIPER_MODELS_DIR=/app/data/piper_models
+    volumes:
+      - /volume1/docker/tts-models:/app/data/piper_models
     ports:
       - "3032:8080"
     logging:
