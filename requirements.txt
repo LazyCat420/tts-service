@@ -1,5 +1,6 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 piper-tts==1.2.0
-onnxruntime==1.17.1
+onnxruntime==1.18.1
+numpy<2
 pydantic==2.13.4
