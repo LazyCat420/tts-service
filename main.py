@@ -23,9 +23,20 @@ async def synthesize_speech(req: TTSRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
 
+@app.get("/api/v1/tts/voices")
+def list_voices():
+    """Returns the list of available Piper voice models on disk."""
+    voices = tts_manager.list_voices()
+    return {
+        "voices": voices,
+        "count": len(voices),
+        "models_dir": tts_manager.models_dir
+    }
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "tts-service"}
+    voice_count = len(tts_manager.list_voices())
+    return {"status": "ok", "service": "tts-service", "voices_available": voice_count}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")

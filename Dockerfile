@@ -13,9 +13,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 FROM python:3.11-slim AS runner
 WORKDIR /app
 
-# Install wget for healthcheck
+# Install wget for healthcheck and espeak-ng for piper phonemes
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends wget \
+    && apt-get install -y --no-install-recommends wget espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system --gid 1001 appgrp \
@@ -30,12 +30,16 @@ COPY app/ ./app/
 COPY scripts/ ./scripts/
 COPY main.py ./main.py
 
-# Download the 37 Piper models during build
+# Download Piper models during build (acts as initial seed).
+# When a volume is mounted at /app/data/piper_models at runtime,
+# the volume contents take precedence. The download script skips
+# files that already exist, so rebuilds are fast after first run.
 RUN chmod +x ./scripts/download_piper_models.py && ./scripts/download_piper_models.py --output-dir /app/data/piper_models
 
 RUN chown -R appusr:appgrp /app
 
 ENV PYTHONPATH="/app"
+ENV PIPER_MODELS_DIR="/app/data/piper_models"
 
 USER appusr
 
