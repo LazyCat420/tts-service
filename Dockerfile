@@ -30,11 +30,9 @@ COPY app/ ./app/
 COPY scripts/ ./scripts/
 COPY main.py ./main.py
 
-# Download Piper models during build (acts as initial seed).
-# When a volume is mounted at /app/data/piper_models at runtime,
-# the volume contents take precedence. The download script skips
-# files that already exist, so rebuilds are fast after first run.
-RUN chmod +x ./scripts/download_piper_models.py && ./scripts/download_piper_models.py --output-dir /app/data/piper_models
+# Create the models directory (will be overridden by volume mount at runtime)
+RUN mkdir -p /app/data/piper_models \
+    && chmod +x ./scripts/entrypoint.sh ./scripts/download_piper_models.py
 
 RUN chown -R appusr:appgrp /app
 
@@ -43,9 +41,10 @@ ENV PIPER_MODELS_DIR="/app/data/piper_models"
 
 USER appusr
 
-HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=60s --timeout=5s --start-period=120s --retries=3 \
   CMD wget --quiet --tries=1 --spider http://127.0.0.1:8080/health || exit 1
 
 EXPOSE 8080
 
-CMD ["python", "main.py"]
+# Entrypoint downloads missing models on first start, then launches server
+ENTRYPOINT ["bash", "/app/scripts/entrypoint.sh"]
