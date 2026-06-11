@@ -1,8 +1,10 @@
 import os
 import io
 import wave
-from typing import Dict, List
 import time
+import threading
+from typing import Dict, List, Optional
+from collections import OrderedDict
 
 try:
     from piper import PiperVoice
@@ -11,86 +13,149 @@ except ImportError:
     HAS_PIPER = False
     print("WARNING: piper-tts is not installed. TTS generation will fail.")
 
+
 class PiperTTSManager:
+    """
+    Manages Piper TTS voice models with LRU eviction to minimize RAM usage.
+    Only keeps a limited number of voices loaded in memory at any time.
+    """
+
+    # Maximum number of voices to keep loaded in memory simultaneously.
+    # Each medium-quality model uses ~60MB RAM, so 2 = ~120MB max.
+    MAX_LOADED_VOICES = 2
+
     def __init__(self, models_dir: str = None):
         if models_dir is None:
-            # Allow override via environment variable for volume-mounted models
             models_dir = os.environ.get(
                 "PIPER_MODELS_DIR",
-                os.path.join(os.path.dirname(__file__), "..", "data", "piper_models")
+                os.path.join(os.path.dirname(__file__), "..", "data", "piper_models"),
             )
         self.models_dir = os.path.abspath(models_dir)
-        self.voices: Dict[str, "PiperVoice"] = {}
-        
-        # We define a few fallback mapping aliases for the downloaded voices
-        self.aliases = {
-            "en-US": "en_US-lessac-medium",
-            "en-US-MALE": "en_US-ryan-high",
-            "en-GB": "en_GB-alan-medium",
-            "default": "en_US-lessac-medium"
+
+        # LRU cache: OrderedDict preserves insertion order; we move-to-end on access.
+        self._cache: OrderedDict[str, "PiperVoice"] = OrderedDict()
+        self._lock = threading.Lock()
+
+        # ── Accent aliases ────────────────────────────────────────
+        # Map friendly accent codes → actual model names on disk.
+        self.aliases: Dict[str, str] = {
+            # American
+            "default":       "en_US-lessac-medium",
+            "en-US":         "en_US-lessac-medium",
+            "en-US-FEMALE":  "en_US-amy-medium",
+            "en-US-MALE":    "en_US-ryan-medium",
+            "american":      "en_US-lessac-medium",
+            "american-f":    "en_US-amy-medium",
+            "american-m":    "en_US-ryan-medium",
+            # British
+            "en-GB":         "en_GB-alan-medium",
+            "british":       "en_GB-alan-medium",
+            "british-f":     "en_GB-alba-medium",
+            "british-m":     "en_GB-alan-medium",
+            # Indian
+            "indian":        "hi_IN-pratham-medium",
+            "indian-m":      "hi_IN-pratham-medium",
+            "indian-f":      "hi_IN-priyamvada-medium",
+            "hindi":         "hi_IN-pratham-medium",
+            # European
+            "french":        "fr_FR-tom-medium",
+            "german":        "de_DE-thorsten-medium",
+            "european":      "fr_FR-tom-medium",
+            # South American
+            "brazilian":     "pt_BR-faber-medium",
+            "portuguese":    "pt_BR-faber-medium",
+            # African
+            "african":       "sw_CD-lanfrica-medium",
+            "swahili":       "sw_CD-lanfrica-medium",
         }
-        
+
         print(f"[PiperTTS] Models directory: {self.models_dir}")
+        print(f"[PiperTTS] Max voices in memory: {self.MAX_LOADED_VOICES}")
         available = self.list_voices()
         print(f"[PiperTTS] Found {len(available)} voice models on disk")
 
-    def _get_model_path(self, voice_name: str) -> str:
-        """Resolves alias and returns path to the ONNX model"""
+    def _get_model_path(self, voice_name: str) -> tuple:
+        """Resolves alias and returns (onnx_path, resolved_name)."""
         name = self.aliases.get(voice_name, voice_name)
-        # If the requested voice_name doesn't exist locally, fallback to default
+
         onnx_path = os.path.join(self.models_dir, f"{name}.onnx")
         if not os.path.exists(onnx_path):
-            fallback = self.aliases["default"]
-            print(f"[PiperTTS] WARNING: Model '{name}' not found at {onnx_path}, falling back to '{fallback}'")
+            fallback = self.aliases.get("default", "en_US-lessac-medium")
+            print(
+                f"[PiperTTS] WARNING: Model '{name}' not found at {onnx_path}, "
+                f"falling back to '{fallback}'"
+            )
             name = fallback
             onnx_path = os.path.join(self.models_dir, f"{name}.onnx")
+
         return onnx_path, name
 
+    def _evict_lru(self) -> None:
+        """Remove the least-recently-used voice from cache if at capacity."""
+        while len(self._cache) >= self.MAX_LOADED_VOICES:
+            evicted_name, _ = self._cache.popitem(last=False)
+            print(f"[PiperTTS] Evicted '{evicted_name}' from memory (LRU)")
+
     def load_voice(self, voice_name: str) -> "PiperVoice":
-        """Loads a voice into memory if not already loaded"""
+        """Loads a voice into memory with LRU eviction."""
         if not HAS_PIPER:
             raise RuntimeError("piper-tts is not installed.")
-            
+
         onnx_path, resolved_name = self._get_model_path(voice_name)
-        
-        if resolved_name in self.voices:
-            return self.voices[resolved_name]
-            
-        json_path = f"{onnx_path}.json"
-        if not os.path.exists(onnx_path) or not os.path.exists(json_path):
-            raise FileNotFoundError(f"Missing ONNX or JSON file for {resolved_name} at {self.models_dir}")
-            
-        print(f"[PiperTTS] Loading voice into memory: {resolved_name}...")
-        t0 = time.time()
-        voice = PiperVoice.load(model_path=onnx_path, config_path=json_path)
-        self.voices[resolved_name] = voice
-        print(f"[PiperTTS] Loaded {resolved_name} in {time.time() - t0:.2f}s")
-        return voice
+
+        with self._lock:
+            # Cache hit — move to end (most recently used)
+            if resolved_name in self._cache:
+                self._cache.move_to_end(resolved_name)
+                return self._cache[resolved_name]
+
+            # Cache miss — evict LRU if needed, then load
+            json_path = f"{onnx_path}.json"
+            if not os.path.exists(onnx_path) or not os.path.exists(json_path):
+                raise FileNotFoundError(
+                    f"Missing ONNX or JSON file for {resolved_name} at {self.models_dir}"
+                )
+
+            self._evict_lru()
+
+            print(f"[PiperTTS] Loading voice into memory: {resolved_name}...")
+            t0 = time.time()
+            voice = PiperVoice.load(model_path=onnx_path, config_path=json_path)
+            self._cache[resolved_name] = voice
+            elapsed = time.time() - t0
+            print(
+                f"[PiperTTS] Loaded {resolved_name} in {elapsed:.2f}s "
+                f"({len(self._cache)}/{self.MAX_LOADED_VOICES} slots used)"
+            )
+            return voice
 
     def synthesize(self, text: str, voice_name: str = "default") -> bytes:
-        """Synthesizes text to a WAV byte string"""
+        """Synthesizes text to a WAV byte string."""
         voice = self.load_voice(voice_name)
-        
-        # Piper synthesize outputs directly to a WAV file object
+
         wav_io = io.BytesIO()
         with wave.open(wav_io, "wb") as wav_file:
             voice.synthesize(text, wav_file)
-            
+
         return wav_io.getvalue()
 
     def list_voices(self) -> List[str]:
-        """Returns a sorted list of available voice model names on disk"""
+        """Returns a sorted list of available voice model names on disk."""
         voices = []
         if not os.path.isdir(self.models_dir):
             return voices
         for f in os.listdir(self.models_dir):
             if f.endswith(".onnx") and not f.endswith(".onnx.json"):
-                # Check that the companion .json config also exists
                 json_path = os.path.join(self.models_dir, f + ".json")
                 if os.path.exists(json_path):
                     voices.append(f[:-5])  # Strip .onnx extension
         voices.sort()
         return voices
+
+    def list_aliases(self) -> Dict[str, str]:
+        """Returns the alias → model name mapping."""
+        return dict(self.aliases)
+
 
 # Singleton instance
 tts_manager = PiperTTSManager()

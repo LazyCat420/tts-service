@@ -25,11 +25,12 @@ async def synthesize_speech(req: TTSRequest):
 
 @app.get("/api/v1/tts/voices")
 def list_voices():
-    """Returns the list of available Piper voice models on disk."""
+    """Returns the list of available Piper voice models on disk and accent aliases."""
     voices = tts_manager.list_voices()
     return {
         "voices": voices,
         "count": len(voices),
+        "aliases": tts_manager.list_aliases(),
         "models_dir": tts_manager.models_dir
     }
 
