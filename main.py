@@ -1,3 +1,4 @@
+import re
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -17,7 +18,12 @@ async def synthesize_speech(req: TTSRequest):
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
         
     try:
-        wav_bytes = tts_manager.synthesize(text=req.text, voice_name=req.voice_accent)
+        # Strip emojis and exotic symbols to prevent ONNX GatherElements out-of-range crashes
+        safe_text = re.sub(r'[^\w\s\.,!\?\-\'":;À-ÿ]', '', req.text)
+        if not safe_text.strip():
+            safe_text = "Audio unavailable."
+            
+        wav_bytes = tts_manager.synthesize(text=safe_text, voice_name=req.voice_accent)
         return Response(content=wav_bytes, media_type="audio/wav")
     except Exception as e:
         traceback.print_exc()
