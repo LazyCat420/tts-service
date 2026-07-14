@@ -41,8 +41,10 @@ ENV PIPER_MODELS_DIR="/app/data/piper_models"
 
 USER appusr
 
+# Use GET, not --spider: --spider sends HEAD, which FastAPI GET routes
+# reject with 405, so the container was permanently marked unhealthy.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=120s --retries=3 \
-  CMD wget --quiet --tries=1 --spider http://127.0.0.1:8080/health || exit 1
+  CMD wget --quiet --tries=1 -O /dev/null http://127.0.0.1:8080/health || exit 1
 
 EXPOSE 8080
 
