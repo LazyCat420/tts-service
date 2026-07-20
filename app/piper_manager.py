@@ -35,6 +35,10 @@ class PiperTTSManager:
         # LRU cache: OrderedDict preserves insertion order; we move-to-end on access.
         self._cache: OrderedDict[str, "PiperVoice"] = OrderedDict()
         self._lock = threading.Lock()
+        # One synthesis lock per voice. `_lock` protects the CACHE only and is
+        # released before inference runs, so it cannot serialise synthesis —
+        # which is what let concurrent requests corrupt a shared ONNX session.
+        self._synth_locks: Dict[str, threading.Lock] = {}
 
         # ── Accent aliases ────────────────────────────────────────
         # Map friendly accent codes → actual model names on disk.
@@ -129,15 +133,52 @@ class PiperTTSManager:
             )
             return voice
 
+    def _synth_lock_for(self, resolved_name: str) -> threading.Lock:
+        """The per-voice synthesis lock, created on first use."""
+        with self._lock:
+            lock = self._synth_locks.get(resolved_name)
+            if lock is None:
+                lock = self._synth_locks[resolved_name] = threading.Lock()
+            return lock
+
     def synthesize(self, text: str, voice_name: str = "default") -> bytes:
-        """Synthesizes text to a WAV byte string."""
+        """Synthesizes text to a WAV byte string.
+
+        Synthesis is SERIALISED per voice. `self._lock` guarded only the cache
+        lookup, so concurrent requests obtained the same PiperVoice and ran
+        inference on its ONNX session simultaneously — which corrupts it. The
+        symptom was an ONNXRuntimeError with a garbage index
+        ("indice = 4601523038094714111", a float bit-pattern read as an int64)
+        from a random node, so it looked like bad input rather than a race.
+
+        Worse, the damage was PERMANENT: the corrupted voice stayed in the LRU
+        cache, so every later request failed for the process lifetime. Verified:
+        sequential requests all returned 200 after a restart; 6 concurrent gave
+        2x200 + 4x500; sequential afterwards were 500 forever.
+
+        Piper inference is CPU-bound and releases the GIL inside ONNX Runtime, so
+        serialising costs throughput but not correctness — and a wrong answer at
+        higher throughput is worth nothing.
+        """
+        onnx_path, resolved_name = self._get_model_path(voice_name)
         voice = self.load_voice(voice_name)
 
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, "wb") as wav_file:
-            voice.synthesize(text, wav_file)
-
-        return wav_io.getvalue()
+        try:
+            with self._synth_lock_for(resolved_name):
+                wav_io = io.BytesIO()
+                with wave.open(wav_io, "wb") as wav_file:
+                    voice.synthesize(text, wav_file)
+                return wav_io.getvalue()
+        except Exception:
+            # Never let a poisoned session outlive the request that broke it.
+            # Belt-and-braces behind the lock above: if a voice does end up
+            # corrupted, evicting it means the NEXT request reloads a clean one,
+            # turning a permanent outage into one failed request.
+            with self._lock:
+                if self._cache.pop(resolved_name, None) is not None:
+                    print(f"[PiperTTS] Evicted '{resolved_name}' after a synthesis "
+                          f"error so the next request reloads it cleanly")
+            raise
 
     def list_voices(self) -> List[str]:
         """Returns a sorted list of available voice model names on disk."""
