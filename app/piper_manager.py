@@ -167,7 +167,22 @@ class PiperTTSManager:
             with self._synth_lock_for(resolved_name):
                 wav_io = io.BytesIO()
                 with wave.open(wav_io, "wb") as wav_file:
-                    voice.synthesize(text, wav_file)
+                    # speaker_id=0 is NOT cosmetic — it is the actual fix for the
+                    # intermittent ONNX crash. piper's synthesize_ids_to_raw only
+                    # defaults speaker_id when num_speakers > 1, so a
+                    # single-speaker voice leaves it None and then feeds
+                    # {"sid": None} straight into session.run(). The graph HAS an
+                    # sid input (onnxruntime rejects unknown feed keys, and it
+                    # doesn't), so None means "no buffer" and the op reads
+                    # whatever is in the allocator arena.
+                    #
+                    # That is why it failed EVERY OTHER request: a freshly loaded
+                    # session has a clean arena and the garbage happens to be
+                    # zeros, so the first synthesis works; the second reuses an
+                    # arena full of the first run's leftovers and ScatterND gets
+                    # an index like -4655178232744876906 (a float bit-pattern read
+                    # as int64). Passing a real array makes it deterministic.
+                    voice.synthesize(text, wav_file, speaker_id=0)
                 return wav_io.getvalue()
         except Exception:
             # Never let a poisoned session outlive the request that broke it.
