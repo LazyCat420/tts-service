@@ -161,39 +161,48 @@ class PiperTTSManager:
         higher throughput is worth nothing.
         """
         onnx_path, resolved_name = self._get_model_path(voice_name)
-        voice = self.load_voice(voice_name)
+        last_error: Optional[Exception] = None
 
-        try:
-            with self._synth_lock_for(resolved_name):
-                wav_io = io.BytesIO()
-                with wave.open(wav_io, "wb") as wav_file:
-                    # speaker_id=0 is NOT cosmetic — it is the actual fix for the
-                    # intermittent ONNX crash. piper's synthesize_ids_to_raw only
-                    # defaults speaker_id when num_speakers > 1, so a
-                    # single-speaker voice leaves it None and then feeds
-                    # {"sid": None} straight into session.run(). The graph HAS an
-                    # sid input (onnxruntime rejects unknown feed keys, and it
-                    # doesn't), so None means "no buffer" and the op reads
-                    # whatever is in the allocator arena.
-                    #
-                    # That is why it failed EVERY OTHER request: a freshly loaded
-                    # session has a clean arena and the garbage happens to be
-                    # zeros, so the first synthesis works; the second reuses an
-                    # arena full of the first run's leftovers and ScatterND gets
-                    # an index like -4655178232744876906 (a float bit-pattern read
-                    # as int64). Passing a real array makes it deterministic.
-                    voice.synthesize(text, wav_file, speaker_id=0)
-                return wav_io.getvalue()
-        except Exception:
-            # Never let a poisoned session outlive the request that broke it.
-            # Belt-and-braces behind the lock above: if a voice does end up
-            # corrupted, evicting it means the NEXT request reloads a clean one,
-            # turning a permanent outage into one failed request.
-            with self._lock:
-                if self._cache.pop(resolved_name, None) is not None:
-                    print(f"[PiperTTS] Evicted '{resolved_name}' after a synthesis "
-                          f"error so the next request reloads it cleanly")
-            raise
+        # Retry against a FRESH session. An ONNX session here does not reliably
+        # survive repeated use — the second and later runs can fail with a garbage
+        # index in the duration predictor — but a newly loaded one succeeds. Since
+        # the handler below evicts on error, attempt 2 always gets a clean load,
+        # which turns a measured 50% failure rate into ~0%.
+        #
+        # This is a WORKAROUND for a defect below our code (piper/onnxruntime),
+        # not a fix for it. The cost is a ~1.6s reload on the retry path. Fixing it
+        # properly means bisecting piper-tts/onnxruntime versions, which is worth
+        # doing separately — see HANDOFF.
+        for attempt in (1, 2):
+            voice = self.load_voice(voice_name)
+            try:
+                return self._synthesize_once(voice, resolved_name, text)
+            except Exception as e:  # noqa: BLE001 — re-raised below
+                last_error = e
+                with self._lock:
+                    if self._cache.pop(resolved_name, None) is not None:
+                        print(f"[PiperTTS] Evicted '{resolved_name}' after a synthesis "
+                              f"error (attempt {attempt}); reloading for a clean session")
+        raise last_error  # type: ignore[misc]
+
+    def _synthesize_once(self, voice: "PiperVoice", resolved_name: str, text: str) -> bytes:
+        """One synthesis attempt, serialised against other users of this voice.
+
+        The lock matters independently of the retry above: `self._lock` guards only
+        the cache lookup and is released before inference, so without this two
+        requests could run on the SAME ONNX session at once, which corrupts it for
+        every later caller.
+        """
+        with self._synth_lock_for(resolved_name):
+            wav_io = io.BytesIO()
+            with wave.open(wav_io, "wb") as wav_file:
+                # Do NOT pass speaker_id here. These voices are single-speaker and
+                # their graphs have no `sid` input at all: onnxruntime SKIPS a None
+                # value in the feed but rejects a real array with
+                # "Invalid input name: sid". Tried and measured — it took the
+                # failure rate from 50% to 100%.
+                voice.synthesize(text, wav_file)
+            return wav_io.getvalue()
 
     def list_voices(self) -> List[str]:
         """Returns a sorted list of available voice model names on disk."""
