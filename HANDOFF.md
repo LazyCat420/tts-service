@@ -1,5 +1,26 @@
 # Handoff — tts-service
 
+## ROOT CAUSE FOUND AND FIXED 2026-07-22 — onnxruntime mem-pattern
+
+The 2026-07-20 "session doesn't survive repeated use" model below was
+**incomplete**: failures are **text-deterministic**, not random decay. The office
+line "Me wait. No buy now. No sell now. Wait for clear path." failed **6/6** even
+with a fresh session per attempt (so the retry workaround still leaked 500s —
+observed live 2026-07-22 18:53, both attempts failed, office fell back to silent
+Web Speech).
+
+Actual cause: **onnxruntime 1.18.1's memory-pattern optimisation corrupts
+ScatterND indices on the 2nd+ run of a session.** piper's `synthesize()` runs one
+inference **per sentence** on the same session, so any multi-sentence text hits
+run 2+ inside a single request. (This is also why lowercase variants "passed" —
+espeak sentence splitting differs.)
+
+Fix (in `_load_voice_safe_session`): create the `InferenceSession` ourselves with
+`sess_options.enable_mem_pattern = False` and wrap in
+`PiperVoice(config=..., session=...)`. Measured in the prod container:
+failing text 0/6 stock → **10/10** with mem-pattern off (arena setting
+irrelevant). Retry + per-voice lock retained as backstops.
+
 ## Intermittent 500s (fixed by workaround 2026-07-20)
 
 Symptom: the browser saw an unbroken wall of 503s from HTML-Notes' `/tts/synthesize`

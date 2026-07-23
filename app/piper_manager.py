@@ -7,7 +7,10 @@ from typing import Dict, List, Optional
 from collections import OrderedDict
 
 try:
+    import json
+    import onnxruntime
     from piper import PiperVoice
+    from piper.voice import PiperConfig
     HAS_PIPER = True
 except ImportError:
     HAS_PIPER = False
@@ -124,7 +127,7 @@ class PiperTTSManager:
 
             print(f"[PiperTTS] Loading voice into memory: {resolved_name}...")
             t0 = time.time()
-            voice = PiperVoice.load(model_path=onnx_path, config_path=json_path)
+            voice = self._load_voice_safe_session(onnx_path, json_path)
             self._cache[resolved_name] = voice
             elapsed = time.time() - t0
             print(
@@ -132,6 +135,28 @@ class PiperTTSManager:
                 f"({len(self._cache)}/{self.MAX_LOADED_VOICES} slots used)"
             )
             return voice
+
+    @staticmethod
+    def _load_voice_safe_session(onnx_path: str, json_path: str) -> "PiperVoice":
+        """Load a PiperVoice on an InferenceSession with mem-pattern OFF.
+
+        onnxruntime 1.18.1's memory-pattern optimisation corrupts ScatterND
+        indices in these graphs on the SECOND AND LATER runs of a session
+        (piper runs one inference per sentence, so multi-sentence text fails
+        inside a single request too). The symptom is
+        "invalid indice found, indice = <garbage int64>" from /dp/ (the
+        duration predictor) — deterministic per text, not a race and not
+        session decay. Measured in the prod container: the failing text went
+        0/6 on a stock session and 10/10 with enable_mem_pattern=False.
+        """
+        with open(json_path, "r", encoding="utf-8") as f:
+            config = PiperConfig.from_dict(json.load(f))
+        opts = onnxruntime.SessionOptions()
+        opts.enable_mem_pattern = False
+        session = onnxruntime.InferenceSession(
+            onnx_path, sess_options=opts, providers=["CPUExecutionProvider"]
+        )
+        return PiperVoice(config=config, session=session)
 
     def _synth_lock_for(self, resolved_name: str) -> threading.Lock:
         """The per-voice synthesis lock, created on first use."""
@@ -163,16 +188,12 @@ class PiperTTSManager:
         onnx_path, resolved_name = self._get_model_path(voice_name)
         last_error: Optional[Exception] = None
 
-        # Retry against a FRESH session. An ONNX session here does not reliably
-        # survive repeated use — the second and later runs can fail with a garbage
-        # index in the duration predictor — but a newly loaded one succeeds. Since
-        # the handler below evicts on error, attempt 2 always gets a clean load,
-        # which turns a measured 50% failure rate into ~0%.
-        #
-        # This is a WORKAROUND for a defect below our code (piper/onnxruntime),
-        # not a fix for it. The cost is a ~1.6s reload on the retry path. Fixing it
-        # properly means bisecting piper-tts/onnxruntime versions, which is worth
-        # doing separately — see HANDOFF.
+        # The root cause (onnxruntime mem-pattern corrupting ScatterND on 2nd+
+        # runs) is fixed at load time in _load_voice_safe_session. The retry
+        # stays as a backstop: on any residual failure the session is evicted
+        # and attempt 2 gets a clean load. Note the old "retry-on-fresh-session"
+        # theory was incomplete — failures were text-deterministic, so a retry
+        # alone could NOT fix them (both attempts failed on the same text).
         for attempt in (1, 2):
             voice = self.load_voice(voice_name)
             try:
