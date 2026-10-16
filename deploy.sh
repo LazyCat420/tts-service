@@ -21,4 +21,4 @@ EXTRA_SSH_SYNC() {
   true
 }
 
-source "${SCRIPT_DIR}/../deploy-kit/lib.sh"
+source "${SCRIPT_DIR}/../../deploy-kit/lib.sh"
