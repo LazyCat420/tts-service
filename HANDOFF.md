@@ -85,3 +85,33 @@ done
 ```
 
 Temporarily disable the retry to see the underlying failure rate.
+
+## Dependency pinning and security refresh 2026-10-22
+
+`requirements.txt` carried `numpy<2` and was otherwise pinned, but starlette arrived
+transitively at 0.46.2 (via `fastapi==0.115.12`, which caps starlette below 0.47), and
+pip-audit flags 7 advisories there (fixed in 0.47.2 / 0.49.1 / 1.0.1 / 1.1.0 / 1.3.0 /
+1.3.1).
+
+| Package | From | To |
+|---|---|---|
+| fastapi | 0.115.12 | 0.161.0 |
+| starlette (new explicit pin) | 0.46.2 (transitive) | 1.9.0 |
+| numpy | `<2` (resolved 1.26.4) | 1.26.4 |
+
+`numpy` stays on the 1.x line on purpose: onnxruntime 1.18.1 is compiled against the
+numpy 1.x C API and numpy 2.x raises `_ARRAY_API` errors (commit `e6803ac`).
+`onnxruntime==1.18.1` is also unchanged, because the mem-pattern root-cause fix above
+was measured on that exact version. Resolved and audited on the Dockerfile's Python
+3.11; the service cannot resolve on 3.12 because `piper-phonemize` (via `piper-tts`) has
+no cp312 wheels, which was already true before this change.
+
+pip-audit on the resolved set: before, 7 distinct advisories in starlette 0.46.2; after,
+none (the only findings on the scratch venv are pip 24.0 and setuptools 79.0.1 from the
+base image). There is no test suite (`tests/` holds only `__init__.py`), so the check was
+a smoke run with the real `en_US-lessac-medium` voice through FastAPI's TestClient: old
+and new manifests both give `/health` ok, `/api/v1/tts/voices` count 1, and 6 of 6
+multi-sentence syntheses returning WAV (the text that used to hit the ScatterND 500).
+espeak-ng data came from the Ubuntu `espeak-ng-data` package because the Dockerfile's
+`espeak-ng` apt package is absent on the dev box. A redeploy is needed to pick up the
+fixed starlette (not done here); after deploying, hit `/health` and one synthesis.
