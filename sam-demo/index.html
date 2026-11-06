@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAM demo — formant synth built from the algorithm</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0 auto; max-width: 900px; padding: 32px 20px 80px;
+         background: #101014; color: #e6e6ea;
+         font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede { color: #9a9aa6; margin: 0 0 28px; }
+  h2 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+  section.card { border: 1px solid #26262e; border-radius: 10px;
+                  padding: 14px 16px; margin: 0 0 14px; background: #16161c; }
+  .knobs { margin: 0 0 6px; color: #8f8f9c; font-size: 13px; }
+  .knobs b { color: #d8d8e2; font-weight: 600; }
+  .says { margin: 0 0 10px; color: #c7c7d2; font-size: 13.5px; }
+  audio { width: 100%; height: 34px; margin: 0 0 8px; }
+  img.spec { width: 100%; border-radius: 6px; display: block;
+              border: 1px solid #26262e; background: #000; }
+  .grid { display: grid; gap: 14px; }
+  h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+        color: #7c7c8a; margin: 34px 0 10px; font-weight: 600; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background: #16161c; border: 1px solid #26262e; border-radius: 8px;
+         padding: 12px 14px; overflow-x: auto; font-size: 12.5px; color: #c7c7d2; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #26262e; }
+  th { color: #7c7c8a; font-weight: 600; }
+  a { color: #7fb0ff; }
+</style>
+</head>
+<body>
+<h1>SAM demo — formant synth from the algorithm</h1>
+<p class="lede">A clean-room implementation: English text → phonemes → a buzzy
+glottal pulse train through three cascaded formant resonators. No SAM ROM data
+or port code. Every clip below was rendered by <code>sam.py</code> in this folder.</p>
+
+<h3>The whole montage</h3>
+<section class="card">
+  <p class="says">Each preset announces its own name, then speaks one line.</p>
+  <audio controls preload="none" src="audio/montage.wav"></audio>
+<img class="spec" src="spec/montage.png" alt="spectrogram">
+</section>
+
+<h3>Same sentence, six presets</h3>
+<p class="lede">The four numbers are SAM's own parameters from the 1982 manual.
+Only they change between clips — the text and the synth are identical.</p>
+<div class="grid">
+    <section class="card">
+      <h2>SAM</h2>
+      <p class="knobs">speed <b>72</b> · pitch <b>64</b> · throat <b>128</b> · mouth <b>128</b></p>
+      <p class="says">“I am a little robot. I come from 1982.”</p>
+      <audio controls preload="none" src="audio/preset-sam.wav"></audio>
+<img class="spec" src="spec/preset-sam.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>Little Robot</h2>
+      <p class="knobs">speed <b>92</b> · pitch <b>60</b> · throat <b>190</b> · mouth <b>190</b></p>
+      <p class="says">“I am a little robot. I come from 1982.”</p>
+      <audio controls preload="none" src="audio/preset-little-robot.wav"></audio>
+<img class="spec" src="spec/preset-little-robot.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>Elf</h2>
+      <p class="knobs">speed <b>72</b> · pitch <b>64</b> · throat <b>110</b> · mouth <b>160</b></p>
+      <p class="says">“I am a little robot. I come from 1982.”</p>
+      <audio controls preload="none" src="audio/preset-elf.wav"></audio>
+<img class="spec" src="spec/preset-elf.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>Stuffy Guy</h2>
+      <p class="knobs">speed <b>82</b> · pitch <b>72</b> · throat <b>110</b> · mouth <b>105</b></p>
+      <p class="says">“I am a little robot. I come from 1982.”</p>
+      <audio controls preload="none" src="audio/preset-stuffy-guy.wav"></audio>
+<img class="spec" src="spec/preset-stuffy-guy.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>Little Old Lady</h2>
+      <p class="knobs">speed <b>82</b> · pitch <b>32</b> · throat <b>145</b> · mouth <b>145</b></p>
+      <p class="says">“I am a little robot. I come from 1982.”</p>
+      <audio controls preload="none" src="audio/preset-little-old-lady.wav"></audio>
+<img class="spec" src="spec/preset-little-old-lady.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>Extra-Terrestrial</h2>
+      <p class="knobs">speed <b>100</b> · pitch <b>64</b> · throat <b>150</b> · mouth <b>200</b></p>
+      <p class="says">“I am a little robot. I come from 1982.”</p>
+      <audio controls preload="none" src="audio/preset-extra-terrestrial.wav"></audio>
+<img class="spec" src="spec/preset-extra-terrestrial.png" alt="spectrogram">
+    </section>
+</div>
+
+<h3>Different sentences, default SAM voice</h3>
+<div class="grid">
+    <section class="card">
+      <h2>Introduction</h2>
+      <p class="says">“Hello. I am SAM. Software Automatic Mouth.”</p>
+      <audio controls preload="none" src="audio/phrase-intro.wav"></audio>
+<img class="spec" src="spec/phrase-intro.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>Little robot</h2>
+      <p class="says">“I am a little robot. I come from 1982.”</p>
+      <audio controls preload="none" src="audio/phrase-robot.wav"></audio>
+<img class="spec" src="spec/phrase-robot.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>Drift King line</h2>
+      <p class="says">“Oh my god. Whoa. Watch out for that car.”</p>
+      <audio controls preload="none" src="audio/phrase-drift.wav"></audio>
+<img class="spec" src="spec/phrase-drift.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>Pangram</h2>
+      <p class="says">“The quick brown fox jumps over the lazy dog.”</p>
+      <audio controls preload="none" src="audio/phrase-pangram.wav"></audio>
+<img class="spec" src="spec/phrase-pangram.png" alt="spectrogram">
+    </section>
+    <section class="card">
+      <h2>About this service</h2>
+      <p class="says">“Drift King needs voices. Let us build our own.”</p>
+      <audio controls preload="none" src="audio/phrase-tts.wav"></audio>
+<img class="spec" src="spec/phrase-tts.png" alt="spectrogram">
+    </section>
+</div>
+
+<h3>Presets</h3>
+<table>
+<tr><th>Preset</th><th>Speed</th><th>Pitch</th><th>Throat</th><th>Mouth</th></tr>
+<tr><td>SAM</td><td>72</td><td>64</td><td>128</td><td>128</td></tr><tr><td>Little Robot</td><td>92</td><td>60</td><td>190</td><td>190</td></tr><tr><td>Elf</td><td>72</td><td>64</td><td>110</td><td>160</td></tr><tr><td>Stuffy Guy</td><td>82</td><td>72</td><td>110</td><td>105</td></tr><tr><td>Little Old Lady</td><td>82</td><td>32</td><td>145</td><td>145</td></tr><tr><td>Extra-Terrestrial</td><td>100</td><td>64</td><td>150</td><td>200</td></tr>
+</table>
+
+<h3>What each knob does here</h3>
+<pre>pitch   0-255  base f0 = 20 + pitch * 1.15 Hz      (64 → ~94 Hz)
+speed   0-255  phoneme duration scale = 72/speed
+throat  0-255  formant scale = (throat/128)^0.75   (all three formants)
+mouth   0-255  F1 scale      = (mouth/128)^0.75    (apparent mouth size)</pre>
+
+<h3>How it works</h3>
+<pre>text ──reciter──→ phonemes ──render──→ wav
+                   |
+                   +-- rules: digraphs, soft c/g, magic-e, r-coloured vowels,
+                       plus a small pronunciation lexicon
+
+buzz = polyBLEP sawtooth at f0, 18% pitch declination over the utterance
+out  = buzz·voiced ─→ F1 ─→ F2 ─→ F3     (2-pole resonators, bw 70/110/180 Hz)
+     + noise·fricative ─→ resonator at the fricative band</pre>
+<p class="lede">Formant values are adult-male phonetics tables; stops are rendered
+as closure + burst; diphthongs interpolate between two vowel targets. Target
+formants are smoothed with a one-pole filter (~15 ms) so phoneme transitions
+don't click.</p>
+
+<h3>Reproduce</h3>
+<pre>python3 sam.py -wav out.wav -pitch 60 -speed 92 -throat 190 -mouth 190 "I am a robot"
+python3 demo.py          # rebuilds audio/, spec/, index.html and README.md</pre>
+</body>
+</html>
