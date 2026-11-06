@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import re
 import sys
 import wave
 
@@ -143,6 +144,25 @@ LEXICON = {
     "to": "T UW",
     "let": "L EH T",
     "us": "AH S",
+    "i": "AY",
+    "come": "K AH M",
+    "some": "S AH M",
+    "done": "D AH N",
+    "love": "L AH V",
+    "give": "G IH V",
+    "have": "HH AE V",
+    "live": "L IH V",
+    "move": "M UW V",
+    "nine": "N AY N",
+    "eight": "EY T",
+    "seven": "S EH V AX N",
+    "six": "S IH K S",
+    "five": "F AY V",
+    "four": "F AO R",
+    "three": "TH R IY",
+    "zero": "Z IH R OW",
+    "ten": "T EH N",
+    "year": "Y IY R",
 }
 
 RULES: list[tuple[str, str]] = [
@@ -185,8 +205,16 @@ RULES: list[tuple[str, str]] = [
     (r"er", "|ER|"),
     (r"ir", "|ER|"),
     (r"ur", "|ER|"),
+    # magic e with a soft c / g ending: nice, page, race, huge
+    (r"a([bcdfgklmnprstvz]*)ce\b", r"|EY| \1|S|"),
+    (r"i([bcdfgklmnprstvz]*)ce\b", r"|AY| \1|S|"),
+    (r"o([bcdfgklmnprstvz]*)ce\b", r"|OW| \1|S|"),
+    (r"u([bcdfgklmnprstvz]*)ce\b", r"|UW| \1|S|"),
+    (r"a([bcdfgklmnprstvz]*)ge\b", r"|EY| \1|JH|"),
+    (r"i([bcdfgklmnprstvz]*)ge\b", r"|AY| \1|JH|"),
+    (r"o([bcdfgklmnprstvz]*)ge\b", r"|OW| \1|JH|"),
+    (r"u([bcdfgklmnprstvz]*)ge\b", r"|Y| |UW| \1|JH|"),
     # magic e: a_e / i_e / o_e / u_e
-    (r"([a-z])e$", r"\1"),
     (r"a([bcdfgklmnprstvz]+)e\b", r"|EY| \1"),
     (r"i([bcdfgklmnprstvz]+)e\b", r"|AY| \1"),
     (r"o([bcdfgklmnprstvz]+)e\b", r"|OW| \1"),
@@ -216,29 +244,42 @@ LETTERS = {
     "v": "V", "w": "W", "x": "K S", "y": "IH", "z": "Z",
 }
 
-import re
+DIGITS = ["zero", "one", "two", "three", "four", "five",
+          "six", "seven", "eight", "nine"]
+
+# A rule's output is |PHONEME| markers; this picks them back out, in order,
+# interleaved with any plain letters the rules left behind.
+_TOKENS = re.compile(r"\|([A-Z]+)\||([a-z])")
+
+WORD_GAP = "_"      # 70 ms between words
+SENTENCE_GAP = "__"  # 250 ms between sentences
 
 
 def reciter(text: str) -> list[str]:
     """English text → phoneme names."""
+    text = re.sub(r"\d", lambda m: f" {DIGITS[int(m.group())]} ", text.lower())
     out: list[str] = []
-    for word in re.findall(r"[a-z']+", text.lower()):
-        word = word.replace("'", "")
-        if not word:
-            continue
-        if word in LEXICON:
-            out.extend(LEXICON[word].split())
-            continue
-        s = word
-        for pat, rep in RULES:
-            s = re.sub(pat, rep, s)
-        # whatever letters survived become their default phoneme
-        for ch in s:
-            if ch in LETTERS:
-                out.extend(LETTERS[ch].split())
-        out.append("_")  # word boundary → short pause
-    if out and out[-1] == "_":
-        out.pop()
+    sentences = [s for s in re.split(r"[.!?;:,]+", text) if s.strip()]
+    for si, sentence in enumerate(sentences):
+        words = [w.replace("'", "") for w in re.findall(r"[a-z']+", sentence)]
+        words = [w for w in words if w]
+        for wi, word in enumerate(words):
+            if word in LEXICON:
+                out.extend(LEXICON[word].split())
+            else:
+                s = word
+                for pat, rep in RULES:
+                    s = re.sub(pat, rep, s)
+                for m in _TOKENS.finditer(s):
+                    marker, letter = m.group(1), m.group(2)
+                    if marker:
+                        out.extend(marker.split())
+                    elif letter:
+                        out.extend(LETTERS[letter].split())
+            if wi < len(words) - 1:
+                out.append(WORD_GAP)
+        if si < len(sentences) - 1:
+            out.append(SENTENCE_GAP)
     return out
 
 
@@ -290,8 +331,11 @@ def synth(phonemes: list[str], pitch=64, speed=72, throat=128, mouth=128,
     # Flatten the phoneme list into (f1, f2, f3, voiced, noise, noise_hz, dur)
     segs: list[tuple[float, float, float, float, float, float, float]] = []
     for p in phonemes:
-        if p == "_":
+        if p == WORD_GAP:
             segs.append((500.0, 1500.0, 2500.0, 0.0, 0.0, 0.0, 0.070))
+            continue
+        if p == SENTENCE_GAP:
+            segs.append((500.0, 1500.0, 2500.0, 0.0, 0.0, 0.0, 0.250))
             continue
         if p in DIPHTHONGS:
             a, b, d = DIPHTHONGS[p]

@@ -66,7 +66,9 @@ out  = buzz·voiced ─→ F1 ─→ F2 ─→ F3    (2-pole resonators, bw 70/1
 
 Formant targets are adult-male phonetics tables, smoothed with a ~15 ms
 one-pole filter so phoneme transitions don't click. Stops render as closure +
-burst; diphthongs interpolate between two vowel targets.
+burst; diphthongs interpolate between two vowel targets; sentences are split at
+`.!?;:,` and get a 250 ms pause (words get 70 ms); digits are read one at a
+time (`1982` → "one nine eight two").
 
 ## Verified
 
