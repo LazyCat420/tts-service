@@ -19,6 +19,7 @@ Every claim below is tagged: **CONFIRMED** (read in a primary/near-primary sourc
 | Concatenative blips | one short tone per letter/syllable | Animal Crossing animalese, Undertale | No — prosody only |
 | DSP robotization | ring mod / bit-crush / comb on any voice | Daleks, GLaDOS, retro UI voices | Yes, degrades with each stage |
 | FM / additive / PD | sidebands and harmonic stacks shaped into formants | DX7 speech patches, Casio CZ | Poorly |
+| LPC | coefficients of recorded speech + synthetic excitation | Speak & Spell (TMS5100), SP0256-AL2 | Yes — but it is compressed *recording*, not synthesis |
 
 The distinction that matters: only the first two carry phonetic information
 (formant structure). Blips carry rhythm and pitch contour, which reads as
@@ -64,6 +65,49 @@ demo has a before/after pair rendered from the same text.
 The original code used $\alpha = 0.12$ for amplitude, which is $\tau \approx 0.36$ ms
 — fast enough to modulate audibly. 5 ms ($\alpha \approx 0.009$) is the fix;
 formant glides use 15 ms ($\alpha \approx 0.003$).
+
+---
+
+## 2b. The chip lineage — SAM's renderer, and LPC chips
+
+**SAM's renderer, read from source** (`s-macke/SAM/src/render.c`, **CONFIRMED** —
+I fetched and grepped it): it runs **three oscillators**, two read from a `sinus`
+table and one from a `rectangle` table, exactly the three-source sum SAM's manual
+describes; per-phoneme amplitudes are 0–15 and the sum is shifted down and biased
+into the SID's 4-bit volume DAC; oscillator phases reset once per glottal period;
+a frame is `5·speed` samples. Two corrections to the folklore:
+
+- SAM is **not** pure math: `sampledConsonantFlags` marks ~12 phonemes whose
+  consonants are short **ROM samples**, not synthesized.
+- SAM's `mouth`/`throat` both rescale F1/F2 by `p/128`; there is no separate
+  "mouth size" model.
+
+**LPC chips are not "computer sounds"** — this is the distinction worth keeping.
+Speak & Spell and the SP0256 encode *recorded speech* as LPC coefficients, then
+reconstruct it from an excitation. **CONFIRMED** (Adafruit's Speak & Spell
+write-up): TMS5100 uses **LPC-10**, 8 kHz, ~**300 words in a 32 KB ROM**, one real
+speaker (radio announcer Mitch Carr), and the TMS5100/TMS5220 synthesis math is
+identical with different coefficient tables.
+
+The LPC math (**MATH**):
+
+$$s[n] \approx \sum_{k=1}^{p} a_k\,s[n-k] + e[n], \qquad H(z) = \frac{G}{1-\sum_k a_k z^{-k}} = \frac{G}{A(z)}$$
+
+Per frame you store $p$ coefficients (as reflection/log-area ratios for stability),
+a pitch period, a gain, and a voicing flag; the decoder runs an excitation (pitch
+pulses or noise) through $1/A(z)$. LPC-10 at 2400 bps is **54 bits per frame at
+44.4 frames/s** (FIPS-137, **UNVERIFIED by me**). Reported from the same chip
+research: SP0256-AL2 is LPC-12 with 59 allophones in 2 KB (**UNVERIFIED by me**).
+
+Because the coefficients come from a real recording, LPC speech keeps a human
+timbre — which is why Speak & Spell sounds like a *person* through a bad radio,
+not like a computer. Replacing the excitation with a synthetic buzz is what turns
+it into a machine voice.
+
+Other verified-by-source points: **Pink Trombone** is a Kelly-Lochbaum waveguide
+(44 sections, LF glottal source); **espeak-ng** runs 22.05 kHz with formants 0–5
+plus high-frequency peaks 6–8 updated every 64 samples, with an optional Klatt
+path (both **CONFIRMED** in that crate's source, **UNVERIFIED by me**).
 
 ---
 
@@ -177,3 +221,6 @@ intelligibility. **UNVERIFIED** as a negative claim — absence of evidence.
 - SAM C port (for comparison, not used here): https://github.com/s-macke/SAM
 - Pink Trombone (vocal tract model): https://dood.al/pinktrombone/
 - Souza & Rosen (2009) vocoder band-count study — summarised by a subagent, PDF not opened (**UNVERIFIED**)
+- Adafruit, "Bringing Back THE VOICE of Speak & Spell" (**read**): https://learn.adafruit.com/bringing-back-the-voice-of-speak-spell/how-it-works.md
+- SAM renderer source, `sinus`/`rectangle` tables and `sampledConsonantFlags` (**read**): https://github.com/s-macke/SAM/blob/master/src/render.c
+- FIPS-137 / LPC-10 specification (**not read**)
