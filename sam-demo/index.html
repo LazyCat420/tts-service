@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SAM demo — formant synth built from the algorithm</title>
+<title>SAM demo — real engine and clean-room synth</title>
 <style>
   :root { color-scheme: dark; }
   body { margin: 0 auto; max-width: 900px; padding: 32px 20px 80px;
@@ -33,10 +33,12 @@
 </style>
 </head>
 <body>
-<h1>SAM demo — formant synth from the algorithm</h1>
-<p class="lede">A clean-room implementation: English text → phonemes → a buzzy
-glottal pulse train through three cascaded formant resonators. No SAM ROM data
-or port code. Every clip below was rendered by <code>sam.py</code> in this folder.</p>
+<h1>SAM demo — the real engine and a clean-room synth</h1>
+<p class="lede">Two synths in one folder. <code>sam.py</code> is a clean-room
+implementation: English text → phonemes → a buzzy glottal pulse train through three
+cascaded formant resonators, no SAM ROM data or port code. <code>sam_engine/</code> is
+the opposite: a faithful port of the real 1982 engine — its tables, its three direct
+oscillators, its 4-bit output. Play both and hear what the port buys you.</p>
 
 <h3>The whole montage</h3>
 <section class="card">
@@ -44,6 +46,78 @@ or port code. Every clip below was rendered by <code>sam.py</code> in this folde
   <audio controls preload="none" src="audio/montage.wav"></audio>
 <img class="spec" src="spec/montage.png" alt="spectrogram">
 </section>
+
+<h3>Real SAM vs this folder's clean-room synth</h3>
+<p class="lede">Identical text, identical knobs (speed 72, pitch 64, throat 128, mouth 128).
+The difference is structural, not a matter of tuning: <code>sam.py</code> filters a
+sawtooth through three resonators, while the real engine sums three oscillators directly —
+sin(F1)·A1 + sin(F2)·A2 + rect(F3)·A3 — and resets their phase at every glottal pulse.
+That hard sync is what makes SAM's formants cut through and gives it its grit.</p>
+<section class="card">
+  <h2>sam.py — clean-room cascade synth</h2>
+  <p class="says">“Hello. I am SAM. Software Automatic Mouth.” · 3.32 s</p>
+  <audio controls preload="none" src="audio/ab-ours.wav"></audio>
+<img class="spec" src="spec/ab-ours.png" alt="spectrogram">
+</section>
+<section class="card">
+  <h2>sam_engine — faithful port of the 1982 renderer</h2>
+  <p class="says">“Hello. I am SAM. Software Automatic Mouth.” · 3.63 s</p>
+  <audio controls preload="none" src="audio/ab-faithful.wav"></audio>
+<img class="spec" src="spec/ab-faithful.png" alt="spectrogram">
+</section>
+<p class="lede">The port was checked against the reference engine byte for byte:
+0 differing bytes on every case tested, and the reciter/parser output matches its
+phoneme stream and frame tables exactly. Its output is 8-bit PCM at 22.05 kHz, so the
+quantisation steps you can see in the spectrogram are SAM's own, not a defect.</p>
+
+<h3>Faithful engine, six presets</h3>
+<p class="lede">The same six voices, rendered by the ported engine. Compare with the
+<code>sam.py</code> versions further down: the vowels are the same phonetics, the
+articulation is SAM's.</p>
+<section class="card">
+  <p class="says">Each preset announces its own name, then speaks one line.</p>
+  <audio controls preload="none" src="audio/montage-faithful.wav"></audio>
+<img class="spec" src="spec/montage-faithful.png" alt="spectrogram">
+</section>
+<div class="grid">
+<section class="card">
+  <h2>SAM</h2>
+  <p class="knobs">speed <b>72</b> · pitch <b>64</b> · throat <b>128</b> · mouth <b>128</b></p>
+  <p class="says">“I am a little robot. I come from 1982.”</p>
+  <audio controls preload="none" src="audio/faithful-sam.wav"></audio>
+<img class="spec" src="spec/faithful-sam.png" alt="spectrogram">
+</section><section class="card">
+  <h2>Little Robot</h2>
+  <p class="knobs">speed <b>92</b> · pitch <b>60</b> · throat <b>190</b> · mouth <b>190</b></p>
+  <p class="says">“I am a little robot. I come from 1982.”</p>
+  <audio controls preload="none" src="audio/faithful-little-robot.wav"></audio>
+<img class="spec" src="spec/faithful-little-robot.png" alt="spectrogram">
+</section><section class="card">
+  <h2>Elf</h2>
+  <p class="knobs">speed <b>72</b> · pitch <b>64</b> · throat <b>110</b> · mouth <b>160</b></p>
+  <p class="says">“I am a little robot. I come from 1982.”</p>
+  <audio controls preload="none" src="audio/faithful-elf.wav"></audio>
+<img class="spec" src="spec/faithful-elf.png" alt="spectrogram">
+</section><section class="card">
+  <h2>Stuffy Guy</h2>
+  <p class="knobs">speed <b>82</b> · pitch <b>72</b> · throat <b>110</b> · mouth <b>105</b></p>
+  <p class="says">“I am a little robot. I come from 1982.”</p>
+  <audio controls preload="none" src="audio/faithful-stuffy-guy.wav"></audio>
+<img class="spec" src="spec/faithful-stuffy-guy.png" alt="spectrogram">
+</section><section class="card">
+  <h2>Little Old Lady</h2>
+  <p class="knobs">speed <b>82</b> · pitch <b>32</b> · throat <b>145</b> · mouth <b>145</b></p>
+  <p class="says">“I am a little robot. I come from 1982.”</p>
+  <audio controls preload="none" src="audio/faithful-little-old-lady.wav"></audio>
+<img class="spec" src="spec/faithful-little-old-lady.png" alt="spectrogram">
+</section><section class="card">
+  <h2>Extra-Terrestrial</h2>
+  <p class="knobs">speed <b>100</b> · pitch <b>64</b> · throat <b>150</b> · mouth <b>200</b></p>
+  <p class="says">“I am a little robot. I come from 1982.”</p>
+  <audio controls preload="none" src="audio/faithful-extra-terrestrial.wav"></audio>
+<img class="spec" src="spec/faithful-extra-terrestrial.png" alt="spectrogram">
+</section>
+</div>
 
 <h3>Same sentence, six presets</h3>
 <p class="lede">The four numbers are SAM's own parameters from the 1982 manual.

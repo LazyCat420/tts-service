@@ -79,6 +79,16 @@ def main(argv: list[str]) -> int:
     phrase_cards = [card(title, f"“{text}”", f"phrase-{slug}.wav")
                     for slug, title, text in demo.PHRASES]
 
+    faithful_cards = []
+    for name, (speed, pitch, throat, mouth) in sam.PRESETS.items():
+        slug = name.lower().replace(" ", "-")
+        faithful_cards.append(
+            f'<section class="card"><h2>{html.escape(name)}</h2>'
+            f'<p class="knobs">speed <b>{speed}</b> · pitch <b>{pitch}</b> · '
+            f'throat <b>{throat}</b> · mouth <b>{mouth}</b></p>'
+            f'<p class="says">“{html.escape(line)}”</p>'
+            f'{player(f"faithful-{slug}.wav")}</section>')
+
     cv_cards = [card(k, v, f"cv-{k}.wav") for k, v in CV_DESC.items()]
 
     preset_rows = "".join(
@@ -87,14 +97,29 @@ def main(argv: list[str]) -> int:
 
     doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SAM demo — formant synth + computer-sound voices</title>
+<title>SAM demo — real engine + clean-room synth</title>
 <style>{CSS}</style></head><body>
-<h1>SAM demo — formant synth and computer-sound voices</h1>
-<p class="lede">Clean-room implementation: English text → phonemes → a buzzy glottal
-pulse train through three cascaded formant resonators. No SAM ROM data, no port code,
-no samples, no neural net. Audio is embedded, so this page plays on its own.</p>
+<h1>SAM demo — the real engine and a clean-room synth</h1>
+<p class="lede">Two implementations side by side. <code>sam.py</code> is clean-room:
+text → phonemes → a buzzy glottal pulse train through three cascaded formant resonators.
+<code>sam_engine/</code> is a faithful port of the actual 1982 engine — its tables, three
+direct oscillators, 4-bit output — verified byte-identical to the reference. Audio is
+embedded, so this page plays on its own.</p>
 
-<h3>The whole montage</h3>
+<h3>Real SAM vs the clean-room synth</h3>
+<p class="lede">Identical text and knobs (72 / 64 / 128 / 128). The port sums three
+oscillators directly — sin(F1)·A1 + sin(F2)·A2 + rect(F3)·A3 — and resets their phase at
+every glottal pulse; the clean-room one filters a sawtooth through resonators. That hard
+sync is why SAM's formants cut through. The port also takes 4.87 s where the synth takes
+2.39 s: SAM's own phoneme durations and stress, not a tuning choice.</p>
+{card("sam.py — clean-room cascade synth", "sawtooth → three resonators", "ab-ours.wav")}
+{card("sam_engine — faithful port of the 1982 renderer", "three direct oscillators, phase reset per glottal pulse", "ab-faithful.wav")}
+
+<h3>Faithful engine, six presets</h3>
+{card("Faithful montage", "Each preset announces its name, then speaks one line.", "montage-faithful.wav")}
+{''.join(faithful_cards)}
+
+<h3>The whole montage (clean-room)</h3>
 {card("Six presets", "Each announces its name, then speaks one line.", "montage.wav")}
 
 <h3>Clear vs fuzzy — what changed</h3>

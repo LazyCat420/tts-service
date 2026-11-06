@@ -15,6 +15,7 @@ import subprocess
 
 import computer_voices as cv
 import sam
+import sam_faithful
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AUDIO = os.path.join(HERE, "audio")
@@ -33,6 +34,26 @@ PHRASES = [
 
 # what the montage says per preset, after announcing its own name
 MONTAGE_LINE = "I am a little robot. I come from 1982."
+
+
+def metrics(samples) -> dict:
+    """Duration, high-band energy share, discontinuities and formant contrast."""
+    import math
+    x = [v / 32768.0 if isinstance(v, int) else float(v) for v in samples]
+    pk = max(abs(v) for v in x) or 1e-9
+    steps = [abs(x[i + 1] - x[i]) for i in range(len(x) - 1)]
+    seg = x[len(x) // 2: len(x) // 2 + 2048]
+    mags = []
+    for f in range(50, 11000, 25):
+        re_ = sum(v * math.cos(2 * math.pi * f * i / sam.SR) for i, v in enumerate(seg))
+        im = sum(v * math.sin(2 * math.pi * f * i / sam.SR) for i, v in enumerate(seg))
+        mags.append((f, math.hypot(re_, im)))
+    tot = sum(v * v for _, v in mags) or 1e-9
+    hi = sum(v * v for f, v in mags if f > 5000) / tot
+    band = sorted((v for f, v in mags if 200 <= f <= 3500), reverse=True)
+    return {"dur": len(x) / sam.SR, "hi": hi,
+            "clicks": sum(1 for d in steps if d > 0.25 * pk),
+            "contrast": band[0] / max(band[len(band) // 2], 1e-9)}
 
 
 def spectrogram(wav: str, png: str) -> bool:
@@ -107,8 +128,50 @@ def main() -> int:
         cv_files[slug] = (wav, os.path.join(SPEC, f"cv-{slug}.png"))
         spectrogram(wav, cv_files[slug][1])
 
-    write_html(preset_clips, phrase_clips, line, clarity, cv_clips, cv_files)
-    write_readme(preset_clips, phrase_clips, clarity, cv_clips)
+    # ── faithful SAM port: the real 1982 renderer ──────────────────────────
+    faithful = {}
+    for name, (speed, pitch, throat, mouth) in PRESETS.items():
+        slug = name.lower().replace(" ", "-")
+        wav = os.path.join(AUDIO, f"faithful-{slug}.wav")
+        sam_faithful.faithful_say(line, wav, pitch=pitch, speed=speed,
+                                  mouth=mouth, throat=throat)
+        faithful[name] = (wav, os.path.join(SPEC, f"faithful-{slug}.png"))
+        spectrogram(wav, faithful[name][1])
+
+    # ── A/B: this folder's synth vs the real engine, same text ─────────────
+    ab = {}
+    ab_text = PHRASES[0][2]
+    speed, pitch, throat, mouth = PRESETS["SAM"]
+    ab["ours"] = (os.path.join(AUDIO, "ab-ours.wav"), os.path.join(SPEC, "ab-ours.png"))
+    sam.say(ab_text, ab["ours"][0], pitch=pitch, speed=speed, throat=throat, mouth=mouth)
+    ab["faithful"] = (os.path.join(AUDIO, "ab-faithful.wav"), os.path.join(SPEC, "ab-faithful.png"))
+    sam_faithful.faithful_say(ab_text, ab["faithful"][0], pitch=pitch, speed=speed,
+                              mouth=mouth, throat=throat)
+    for tag in ab:
+        spectrogram(*ab[tag])
+
+    # ── faithful montage ───────────────────────────────────────────────────
+    f_montage: list[int] = [0] * int(0.25 * sam.SR)
+    for name, (speed, pitch, throat, mouth) in PRESETS.items():
+        f_montage += sam_faithful.faithful_samples(name, pitch, speed, mouth, throat)
+        f_montage += [0] * int(0.25 * sam.SR)
+        f_montage += sam_faithful.faithful_samples(line, pitch, speed, mouth, throat)
+        f_montage += [0] * int(0.6 * sam.SR)
+    f_montage_wav = os.path.join(AUDIO, "montage-faithful.wav")
+    sam.write_wav(f_montage_wav, f_montage)
+    spectrogram(f_montage_wav, os.path.join(SPEC, "montage-faithful.png"))
+
+    ab_speed, ab_pitch, ab_throat, ab_mouth = PRESETS["SAM"]
+    ab_metrics = {
+        "ours": metrics(sam.render(ab_text, pitch=ab_pitch, speed=ab_speed,
+                                   throat=ab_throat, mouth=ab_mouth)),
+        "faithful": metrics(sam_faithful.faithful_samples(ab_text, ab_pitch, ab_speed,
+                                                          ab_mouth, ab_throat)),
+    }
+
+    write_html(preset_clips, phrase_clips, line, clarity, cv_clips, cv_files,
+               faithful, ab, f_montage_wav, ab_metrics)
+    write_readme(preset_clips, phrase_clips, clarity, cv_clips, faithful, ab_metrics)
     print(f"audio: {len(preset_clips) + len(phrase_clips) + 1 + len(clarity) + len(cv_clips)} "
           f"files, montage {len(montage) / sam.SR:.1f}s")
     return 0
@@ -125,7 +188,8 @@ def _player(wav: str, png: str | None) -> str:
     return "\n".join(parts)
 
 
-def write_html(preset_clips, phrase_clips, line, clarity, cv_clips, cv_files) -> None:
+def write_html(preset_clips, phrase_clips, line, clarity, cv_clips, cv_files,
+               faithful, ab, f_montage_wav, ab_metrics) -> None:
     rows = []
     for name, (speed, pitch, throat, mouth) in PRESETS.items():
         wav, png = preset_clips[name]
@@ -150,7 +214,7 @@ def write_html(preset_clips, phrase_clips, line, clarity, cv_clips, cv_files) ->
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SAM demo — formant synth built from the algorithm</title>
+<title>SAM demo — real engine and clean-room synth</title>
 <style>
   :root {{ color-scheme: dark; }}
   body {{ margin: 0 auto; max-width: 900px; padding: 32px 20px 80px;
@@ -180,16 +244,56 @@ def write_html(preset_clips, phrase_clips, line, clarity, cv_clips, cv_files) ->
 </style>
 </head>
 <body>
-<h1>SAM demo — formant synth from the algorithm</h1>
-<p class="lede">A clean-room implementation: English text → phonemes → a buzzy
-glottal pulse train through three cascaded formant resonators. No SAM ROM data
-or port code. Every clip below was rendered by <code>sam.py</code> in this folder.</p>
+<h1>SAM demo — the real engine and a clean-room synth</h1>
+<p class="lede">Two synths in one folder. <code>sam.py</code> is a clean-room
+implementation: English text → phonemes → a buzzy glottal pulse train through three
+cascaded formant resonators, no SAM ROM data or port code. <code>sam_engine/</code> is
+the opposite: a faithful port of the real 1982 engine — its tables, its three direct
+oscillators, its 4-bit output. Play both and hear what the port buys you.</p>
 
 <h3>The whole montage</h3>
 <section class="card">
   <p class="says">Each preset announces its own name, then speaks one line.</p>
   {_player(os.path.join(AUDIO, "montage.wav"), os.path.join(SPEC, "montage.png"))}
 </section>
+
+<h3>Real SAM vs this folder's clean-room synth</h3>
+<p class="lede">Identical text, identical knobs (speed 72, pitch 64, throat 128, mouth 128).
+The difference is structural, not a matter of tuning: <code>sam.py</code> filters a
+sawtooth through three resonators, while the real engine sums three oscillators directly —
+sin(F1)·A1 + sin(F2)·A2 + rect(F3)·A3 — and resets their phase at every glottal pulse.
+That hard sync is what makes SAM's formants cut through and gives it its grit.</p>
+<section class="card">
+  <h2>sam.py — clean-room cascade synth</h2>
+  <p class="says">“{html.escape(PHRASES[0][2])}” · {ab_metrics["ours"]["dur"]:.2f} s</p>
+  {_player(ab["ours"][0], ab["ours"][1])}
+</section>
+<section class="card">
+  <h2>sam_engine — faithful port of the 1982 renderer</h2>
+  <p class="says">“{html.escape(PHRASES[0][2])}” · {ab_metrics["faithful"]["dur"]:.2f} s</p>
+  {_player(ab["faithful"][0], ab["faithful"][1])}
+</section>
+<p class="lede">The port was checked against the reference engine byte for byte:
+0 differing bytes on every case tested, and the reciter/parser output matches its
+phoneme stream and frame tables exactly. Its output is 8-bit PCM at 22.05 kHz, so the
+quantisation steps you can see in the spectrogram are SAM's own, not a defect.</p>
+
+<h3>Faithful engine, six presets</h3>
+<p class="lede">The same six voices, rendered by the ported engine. Compare with the
+<code>sam.py</code> versions further down: the vowels are the same phonetics, the
+articulation is SAM's.</p>
+<section class="card">
+  <p class="says">Each preset announces its own name, then speaks one line.</p>
+  {_player(f_montage_wav, os.path.join(SPEC, "montage-faithful.png"))}
+</section>
+<div class="grid">
+{''.join(f'''<section class="card">
+  <h2>{html.escape(n)}</h2>
+  <p class="knobs">speed <b>{p[0]}</b> · pitch <b>{p[1]}</b> · throat <b>{p[2]}</b> · mouth <b>{p[3]}</b></p>
+  <p class="says">“{html.escape(line)}”</p>
+  {_player(faithful[n][0], faithful[n][1])}
+</section>''' for n, p in PRESETS.items())}
+</div>
 
 <h3>Same sentence, six presets</h3>
 <p class="lede">The four numbers are SAM's own parameters from the 1982 manual.
@@ -265,32 +369,56 @@ python3 demo.py          # rebuilds audio/, spec/, index.html and README.md</pre
         f.write(doc)
 
 
-def write_readme(preset_clips, phrase_clips, clarity, cv_clips) -> None:
+def write_readme(preset_clips, phrase_clips, clarity, cv_clips, faithful, ab_metrics) -> None:
     rows = "\n".join(
         f"| {n} | {p[0]} | {p[1]} | {p[2]} | {p[3]} | [audio](audio/preset-{n.lower().replace(' ', '-')}.wav) |"
         for n, p in PRESETS.items())
     phrases = "\n".join(
         f"| {t} | “{x}” | [audio](audio/phrase-{s}.wav) |"
         for s, t, x in PHRASES)
-    doc = f"""# SAM demo — clean-room formant speech synth
+    doc = f"""# SAM demo — two synths: a clean-room one and the real engine
 
-A from-scratch implementation of the SAM algorithm: text → phonemes → buzzy
-glottal pulse train through three cascaded formant resonators. No SAM ROM data,
-no port code — the reciter rules, the phoneme table and the renderer are
-written here, from the published description of how SAM works.
+Two independent implementations of SAM in one folder:
+
+- **`sam.py`** — clean-room. Text → phonemes → buzzy glottal pulse train through
+  three cascaded formant resonators. No SAM ROM data, no port code: the reciter
+  rules, phoneme table and renderer are written here from the published
+  description of the algorithm. Tuned to *resemble* SAM.
+- **`sam_engine/`** — faithful. A port of the actual 1982 engine (reciter,
+  parser, renderer and its tables), verified **byte-identical** to the reference
+  implementation on every case tested.
 
 Open **[index.html](index.html)** for the playable demo (audio + spectrograms).
+
+## Why the port sounds better
+
+| | duration | energy >5 kHz | steps >25% of peak | formant contrast |
+|---|---|---|---|---|
+| `sam.py` (cascade synth) | {ab_metrics["ours"]["dur"]:.2f} s | {ab_metrics["ours"]["hi"] * 100:.2f}% | {ab_metrics["ours"]["clicks"]} | {ab_metrics["ours"]["contrast"]:.0f}× |
+| `sam_engine` (real engine) | {ab_metrics["faithful"]["dur"]:.2f} s | {ab_metrics["faithful"]["hi"] * 100:.2f}% | {ab_metrics["faithful"]["clicks"]} | {ab_metrics["faithful"]["contrast"]:.0f}× |
+
+Same text, same knobs. The real engine sums three oscillators directly —
+`sin(F1)·A1 + sin(F2)·A2 + rect(F3)·A3` — and resets their phase at every glottal
+pulse. The clean-room one filters a sawtooth through resonators, which smears the
+formants across phoneme boundaries and loses the articulation that makes SAM
+intelligible. The step count is not a defect: SAM writes 8-bit PCM through a
+5-sample C64 simulation timetable, so coarse steps *are* its sound.
 
 ## Files
 
 | File | What |
 |---|---|
-| `sam.py` | the synth: reciter, phoneme table, renderer, CLI |
+| `sam.py` | clean-room synth: reciter, phoneme table, renderer, CLI |
+| `sam_engine/` | faithful port: `parse.py` (reciter + parser), `render.py` (renderer), `tables.py` |
+| `sam_faithful.py` | wrapper around the port: `faithful_say(text, path, pitch, speed, mouth, throat)` |
 | `computer_voices.py` | five DSP-only "computer sound" voices (chip, vocoder, ring, crush, blips) |
 | `make_artifact.py` | builds a self-contained HTML artifact with the audio embedded |
 | `RESEARCH-COMPUTER-VOICES.md` | research notes: the math and the sources behind each technique |
 | `demo.py` | builds every clip, spectrogram, `index.html`, this file |
 | `audio/montage.wav` | all six presets in one clip, each announcing itself |
+| `audio/montage-faithful.wav` | the same montage from the ported engine |
+| `audio/faithful-*.wav` | same sentence per preset, ported engine |
+| `audio/ab-ours.wav`, `audio/ab-faithful.wav` | the A/B pair from the table above |
 | `audio/preset-*.wav` | same sentence, one clip per preset |
 | `audio/phrase-*.wav` | five sentences in the default SAM voice |
 | `spec/*.png` | log-frequency spectrograms (ffmpeg `showspectrumpic`) |
@@ -337,8 +465,20 @@ them to `/tmp/cv-*.wav`.
 
 ```
 python3 sam.py -wav out.wav -pitch 60 -speed 92 -throat 190 -mouth 190 "I am a robot"
+python3 sam_faithful.py "Hello. I am SAM." -wav hello.wav -pitch 64 -speed 72
 python3 demo.py      # rebuild everything
 ```
+
+The port's knobs are SAM's own: `pitch` 0–255 (f0 table, not a Hz formula),
+`speed` 0–255 (frames per phoneme), `mouth` 0–255 (F1 scale) and `throat`
+0–255 (F1/F2 scale). The default voice is 72 / 64 / 128 / 128.
+
+## Licensing note
+
+`sam.py` is original code. `sam_engine/` carries SAM's own tables, which come from a
+reverse-engineered ROM: SAM (Software Automatic Mouth) is abandonware by SoftVoice,
+Inc. Fine for personal and experimental use; do not ship it commercially without
+checking the rights first.
 
 ## Signal chain
 

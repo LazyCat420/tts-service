@@ -1,22 +1,46 @@
-# SAM demo — clean-room formant speech synth
+# SAM demo — two synths: a clean-room one and the real engine
 
-A from-scratch implementation of the SAM algorithm: text → phonemes → buzzy
-glottal pulse train through three cascaded formant resonators. No SAM ROM data,
-no port code — the reciter rules, the phoneme table and the renderer are
-written here, from the published description of how SAM works.
+Two independent implementations of SAM in one folder:
+
+- **`sam.py`** — clean-room. Text → phonemes → buzzy glottal pulse train through
+  three cascaded formant resonators. No SAM ROM data, no port code: the reciter
+  rules, phoneme table and renderer are written here from the published
+  description of the algorithm. Tuned to *resemble* SAM.
+- **`sam_engine/`** — faithful. A port of the actual 1982 engine (reciter,
+  parser, renderer and its tables), verified **byte-identical** to the reference
+  implementation on every case tested.
 
 Open **[index.html](index.html)** for the playable demo (audio + spectrograms).
+
+## Why the port sounds better
+
+| | duration | energy >5 kHz | steps >25% of peak | formant contrast |
+|---|---|---|---|---|
+| `sam.py` (cascade synth) | 3.32 s | 0.14% | 0 | 133× |
+| `sam_engine` (real engine) | 3.63 s | 4.72% | 4144 | 26× |
+
+Same text, same knobs. The real engine sums three oscillators directly —
+`sin(F1)·A1 + sin(F2)·A2 + rect(F3)·A3` — and resets their phase at every glottal
+pulse. The clean-room one filters a sawtooth through resonators, which smears the
+formants across phoneme boundaries and loses the articulation that makes SAM
+intelligible. The step count is not a defect: SAM writes 8-bit PCM through a
+5-sample C64 simulation timetable, so coarse steps *are* its sound.
 
 ## Files
 
 | File | What |
 |---|---|
-| `sam.py` | the synth: reciter, phoneme table, renderer, CLI |
+| `sam.py` | clean-room synth: reciter, phoneme table, renderer, CLI |
+| `sam_engine/` | faithful port: `parse.py` (reciter + parser), `render.py` (renderer), `tables.py` |
+| `sam_faithful.py` | wrapper around the port: `faithful_say(text, path, pitch, speed, mouth, throat)` |
 | `computer_voices.py` | five DSP-only "computer sound" voices (chip, vocoder, ring, crush, blips) |
 | `make_artifact.py` | builds a self-contained HTML artifact with the audio embedded |
 | `RESEARCH-COMPUTER-VOICES.md` | research notes: the math and the sources behind each technique |
 | `demo.py` | builds every clip, spectrogram, `index.html`, this file |
 | `audio/montage.wav` | all six presets in one clip, each announcing itself |
+| `audio/montage-faithful.wav` | the same montage from the ported engine |
+| `audio/faithful-*.wav` | same sentence per preset, ported engine |
+| `audio/ab-ours.wav`, `audio/ab-faithful.wav` | the A/B pair from the table above |
 | `audio/preset-*.wav` | same sentence, one clip per preset |
 | `audio/phrase-*.wav` | five sentences in the default SAM voice |
 | `spec/*.png` | log-frequency spectrograms (ffmpeg `showspectrumpic`) |
@@ -72,8 +96,20 @@ them to `/tmp/cv-*.wav`.
 
 ```
 python3 sam.py -wav out.wav -pitch 60 -speed 92 -throat 190 -mouth 190 "I am a robot"
+python3 sam_faithful.py "Hello. I am SAM." -wav hello.wav -pitch 64 -speed 72
 python3 demo.py      # rebuild everything
 ```
+
+The port's knobs are SAM's own: `pitch` 0–255 (f0 table, not a Hz formula),
+`speed` 0–255 (frames per phoneme), `mouth` 0–255 (F1 scale) and `throat`
+0–255 (F1/F2 scale). The default voice is 72 / 64 / 128 / 128.
+
+## Licensing note
+
+`sam.py` is original code. `sam_engine/` carries SAM's own tables, which come from a
+reverse-engineered ROM: SAM (Software Automatic Mouth) is abandonware by SoftVoice,
+Inc. Fine for personal and experimental use; do not ship it commercially without
+checking the rights first.
 
 ## Signal chain
 

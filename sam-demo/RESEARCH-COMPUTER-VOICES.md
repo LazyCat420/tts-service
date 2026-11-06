@@ -208,6 +208,60 @@ intelligibility. **UNVERIFIED** as a negative claim — absence of evidence.
 
 ---
 
+## The faithful port: what the real engine does differently
+
+**CONFIRMED** — ported from `discordier/sam` (a JS port of Macke's C SAM) into
+`sam_engine/`, then verified byte-for-byte against it.
+
+1. **Three direct oscillators, not a filtered source.**
+   `mux = sin(F1)·A1 + sin(F2)·A2 + rect(F3)·A3`, then `/32`, then `+128` to go from
+   signed to unsigned. F3 is a rectangle wave (`0x90` for phase < 129, `0x70` above), so
+   it contributes odd harmonics rather than a sine. The clean-room synth instead feeds a
+   sawtooth through cascaded 2-pole resonators; the cascade smears formants across
+   phoneme boundaries and the port's direct summation does not.
+2. **Hard phase reset every glottal period.** At the start of each pulse,
+   `phase1 = phase2 = phase3 = 0`. All three oscillators restart together, so the
+   waveform is periodic at f0 instead of drifting — this is what makes SAM's pitch
+   unambiguous. (CONFIRMED in `process-frames.js`.)
+3. **A glottal pulse is a frame count, not a shape.** `glottal = pitches[pos]`,
+   `mem38 = glottal·0.75`; for the first 75% of the pulse the phases advance, and after
+   that a sampled consonant may interleave. There is no glottal waveform table.
+4. **Pitch contour is a table, not a formula.** `stressPitch_tab47492` maps phoneme +
+   stress to a pitch, then the first formant's half-value is subtracted from every frame
+   ("this adds variety to the voice"). Pitch is an integer 0–255 into `sinus()`, whose
+   phase argument is `0xFF & (p>>8)` — a 256-entry sine table, i.e. 8-bit phase.
+5. **Amplitudes are decibel indices rescaled to 0–15.** `ampldata` holds 0–15 values;
+   `amplitudeRescale = [0,1,2,2,2,3,3,4,4,5,6,8,9,11,13,15]` converts them to the linear
+   scale used by the oscillator sum.
+6. **Output is 8-bit and coarse on purpose.** `CreateOutputBuffer` scales each sample by
+   16 and writes five copies through a C64-simulation timetable
+   (`[162,167,167,127,128]` for the formant synth), so the effective sample rate is
+   22.05 kHz but the *resolution* is 4 bits before interpolation. Measured on the port:
+   4.18% of energy above 5 kHz and thousands of sample steps over 25% of peak — that
+   grit is the sound, not a defect. (The clean-room synth's 0 steps are what make it
+   sound smooth and characterless.)
+7. **Sampled consonants are ROM samples, not synthesis.** `sampledConsonantFlags` marks
+   phonemes that interleave a stored waveform (`sampleTable`, 256-byte sections) with the
+   glottal pulse. Those are the only non-generated samples in the engine.
+8. **Durations are per-phoneme frame counts.** `phonemeLength` from the parser, scaled by
+   `speed` (frames per phoneme = speed), at 125 frames/s. That is why the port takes
+   4.87 s for a sentence the clean-room synth says in 2.39 s: SAM's own phoneme lengths,
+   stress and pauses.
+
+### Port verification (measured, not claimed)
+
+| Stage | Check | Result |
+|---|---|---|
+| reciter + parser | phoneme string and `[index, length, stress]` arrays vs the reference on 6 texts + 300 random sentences | exact match |
+| frames | `pitches`, `freq[3]`, `ampl[3]`, `sampledConsonantFlag` vs the reference | 0 differing indices |
+| PCM | raw output vs the reference on 5 texts, 4 knob settings | 0 differing bytes |
+
+The only fix the port needed was JS semantics: the reference reads past the end of its
+frame arrays, where `undefined` behaves as 0. `_get()` in `render.py` mirrors that; short
+utterances like "Elf" depend on it.
+
+---
+
 ## Sources
 
 - Klatt resonator equations: https://www.phon.ox.ac.uk/klatt_resonators (**read**)
