@@ -14,6 +14,7 @@ import sys
 
 import computer_voices as cv
 import demo
+import experiments
 import sam
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -91,6 +92,23 @@ def main(argv: list[str]) -> int:
 
     cv_cards = [card(k, v, f"cv-{k}.wav") for k, v in CV_DESC.items()]
 
+    exp_order = ["cascade", "parallel", "pulse", "additive", "lpc",
+                 "psola-len", "psola-pit", "hnm", "resample", "sam"]
+    exp_cards = []
+    for slug in exp_order:
+        if slug in experiments.METHODS:
+            title, why, formula = experiments.METHODS[slug]
+        else:
+            title = "Naive resampling (the wrong way)"
+            why = ("Playing the same samples 1.6x faster raises pitch and formants "
+                   "together. Compare with psola-len.")
+            formula = "y(t) = x(t/alpha)  ->  every frequency x alpha"
+        exp_cards.append(
+            f'<section class="card"><h2>{html.escape(title)}</h2>'
+            f'<p class="says">{html.escape(why)}</p>'
+            f'<pre>{html.escape(formula)}</pre>'
+            f'{player(f"x-{slug}.wav")}</section>')
+
     preset_rows = "".join(
         f"<tr><td>{html.escape(n)}</td><td>{p[0]}</td><td>{p[1]}</td>"
         f"<td>{p[2]}</td><td>{p[3]}</td></tr>" for n, p in sam.PRESETS.items())
@@ -130,6 +148,15 @@ white-noise path (gain 1.4, bandwidth 1200 Hz). Measured on that clip:
 (gain 0.35, bandwidth 700 Hz): <span class="good">0.14% and 0 steps</span>.</p>
 {card("Before", "no band-limiting, raw noise path", "clarity-before.wav")}
 {card("After", "80 Hz–4.8 kHz band-limit, tighter noise", "clarity-after.wav")}
+
+<h3>Making speech out of waves — ten renderings</h3>
+<p class="lede">One sentence, ten families of technique, all generated in Python.
+Cascade resonators, Klatt's parallel branch, additive harmonics, a Rosenberg glottal
+pulse, LPC resynthesis, PSOLA length and pitch changes, sinusoidal modelling, the
+naive resampler that gets it wrong, and the ported 1982 engine for reference.
+Harmonicity (share of energy on harmonics of f0): parallel 95.9%, pulse 96.2%,
+additive 85.8%, LPC 94.1%, HNM 95.5%.</p>
+{''.join(exp_cards)}
 
 <h3>Same sentence, six presets</h3>
 <p class="lede">Only the four 1982-manual parameters change between clips.</p>

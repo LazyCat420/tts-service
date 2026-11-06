@@ -16,7 +16,7 @@ Open **[index.html](index.html)** for the playable demo (audio + spectrograms).
 
 | | duration | energy >5 kHz | steps >25% of peak | formant contrast |
 |---|---|---|---|---|
-| `sam.py` (cascade synth) | 3.32 s | 0.14% | 0 | 133× |
+| `sam.py` (cascade synth) | 3.32 s | 0.17% | 0 | 30× |
 | `sam_engine` (real engine) | 3.63 s | 4.72% | 4144 | 26× |
 
 Same text, same knobs. The real engine sums three oscillators directly —
@@ -31,6 +31,12 @@ intelligible. The step count is not a defect: SAM writes 8-bit PCM through a
 | File | What |
 |---|---|
 | `sam.py` | clean-room synth: reciter, phoneme table, renderer, CLI |
+| `methods.py` | four renderers (cascade, parallel, additive, glottal pulse) for A/B listening |
+| `experiments.py` | builds `experiments.html`: one sentence through ten techniques |
+| `lpc.py` | LPC analysis + resynthesis (Levinson-Durbin, pulse/noise excitation) |
+| `psola.py` | PSOLA pitch marks and TD-PSOLA time/pitch modification |
+| `hnm.py` | sinusoidal modelling + noise residual (HNM) |
+| `RESEARCH-WAVES-TO-SPEECH.md` | the math behind every technique, with sources and labels |
 | `sam_engine/` | faithful port: `parse.py` (reciter + parser), `render.py` (renderer), `tables.py` |
 | `sam_faithful.py` | wrapper around the port: `faithful_say(text, path, pitch, speed, mouth, throat)` |
 | `computer_voices.py` | five DSP-only "computer sound" voices (chip, vocoder, ring, crush, blips) |
@@ -47,6 +53,30 @@ intelligible. The step count is not a defect: SAM writes 8-bit PCM through a
 
 `audio/` and `spec/` are generated and gitignored (~4.3 MB); run `python3 demo.py`
 to rebuild them, then open `index.html`.
+
+## Renderer: what changed and why
+
+The first renderer was a cascade: sawtooth → F1 → F2 → F3, fixed bandwidths
+70/110/180 Hz, with `throat` scaling all three formants by `(throat/128)^0.75`
+and `mouth` scaling F1 upward. That is wrong on both counts, measured against
+the ported engine:
+
+- **Knob semantics.** In the real engine `mouth` scales **F1 only** and
+  `throat` scales **F2 only** (factor 128 = unchanged, linear); F3 is untouched.
+- **Cascade gain.** Each cascade stage is normalised to unity gain at DC, so the
+  product peaks as `(F/bw)^3`. Push the formants up and F3 dominates — the voice
+  screams. The parallel branch gives each formant an explicit gain
+  (1.0 / 0.55 / 0.30) and keeps the balance.
+- **Bandwidth.** A fixed 70/110/180 Hz is right only near the default voice.
+  Bandwidth now grows with centre frequency: `bw = 0.06·f + 50 Hz`.
+- **Ordering.** Formants are clamped to `F1 < F2 < F3 < 0.45·SR`; crossing them
+  is what turns a scaled-up preset into noise.
+
+Effect on the presets that sounded like noise (harmonicity / zero-crossings):
+Elf 78.4% → 88.0%, 1249 → 1023/s; Little Old Lady 60.1% → 98.1% harmonicity,
+1949 → 1820/s; Extra-Terrestrial 90.1% → 84.7%, 3031 → 2536/s. The parallel
+branch is now the default (`engine="parallel"`); `engine="cascade"` keeps the old
+path for comparison.
 
 ## Presets (the 1982 manual's values)
 

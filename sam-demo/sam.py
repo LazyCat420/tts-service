@@ -8,15 +8,16 @@ and amplitudes are table-driven per phoneme, and unvoiced consonants switch the
 source from the buzz to noise.
 
     glottal buzz (f0)  ─┐
-                        ├─→ F1 ─→ F2 ─→ F3 ─→ out
+                        ├─→ F1 ─→ F2 ─→ F3 ─→ out      (cascade)
     noise (fricatives) ─┘
+                        └─→ F1, F2, F3 in parallel, summed with gains (default)
 
-Four knobs, exactly as SAM had them:
+Four knobs, with SAM's own semantics (measured on the ported engine):
 
     pitch   0-255   base f0
     speed   0-255   phoneme duration (higher = faster)
-    throat  0-255   formant frequency scale
-    mouth   0-255   F1/F2 scale, i.e. apparent mouth size
+    throat  0-255   F2 scale  (factor 128 = unchanged, linear)
+    mouth   0-255   F1 scale  (factor 128 = unchanged, linear)
 
 Usage:
     python3 sam.py -wav out.wav -pitch 60 -speed 92 -throat 190 -mouth 190 "I am a robot"
@@ -364,18 +365,36 @@ def _alpha(tau_ms: float) -> float:
     return 1.0 - math.exp(-1.0 / (tau_ms * 1e-3 * SR))
 
 
+# Per-formant gains for the parallel branch (Klatt-style). The cascade branch
+# normalises every resonator to unity DC gain, so the product peaks as
+# (F/bw)^3 — at high throat values F3 then dominates and the voice screams.
+# Explicit gains keep the formants in their intended balance.
+FORMANT_GAIN = (1.0, 0.55, 0.30)
+
+
+def _bandwidth(f: float) -> float:
+    """Formant bandwidth grows with centre frequency: 6% + 50 Hz floor.
+
+    A fixed 70/110/180 Hz is right only near the adult-male default; scaled far
+    up it rings (high Q), scaled far down the formants merge into buzz.
+    """
+    return max(50.0, 0.06 * f + 50.0)
+
+
 def synth(phonemes: list[str], pitch=64, speed=72, throat=128, mouth=128,
           sr: int = SR, seed: int = 7, source: str = "saw",
           lp_hz: float = 4800.0, hp_hz: float = 80.0,
-          noise_gain: float = 0.35, noise_bw: float = 700.0) -> list[float]:
+          noise_gain: float = 0.35, noise_bw: float = 700.0,
+          engine: str = "parallel") -> list[float]:
     """Render a phoneme list to floats in [-1, 1].
 
-    `source`: "saw" (glottal buzz, SAM-like) or "square" (chip voice).
+    `engine`: "parallel" (default, Klatt parallel branch) or "cascade".
+    `source`: "saw" (glottal buzz), "square" (chip voice) or "pulse".
     `lp_hz`/`hp_hz`: output band-limiting; 0 disables.
     """
     f0_base = 20.0 + pitch * 1.15          # pitch 64 → ~94 Hz
-    formant_scale = (throat / 128.0) ** 0.75
-    mouth_scale = (mouth / 128.0) ** 0.75
+    mouth_scale = mouth / 128.0            # SAM: mouth scales F1
+    throat_scale = throat / 128.0          # SAM: throat scales F2, F3 untouched
     dur_scale = 72.0 / max(speed, 1)
 
     # Flatten the phoneme list into (f1, f2, f3, voiced, noise, noise_hz, dur)
@@ -449,16 +468,39 @@ def synth(phonemes: list[str], pitch=64, speed=72, throat=128, mouth=128,
             if source == "square":
                 buzz = (1.0 if phase < 0.5 else -1.0) \
                     + _poly_blep(phase, dt) - _poly_blep((phase + 0.5) % 1.0, dt)
+            elif source == "pulse":
+                # Rosenberg glottal pulse: 40% open phase, 16% return phase
+                tp, tn = 0.4, 0.16
+                if phase < tp:
+                    buzz = 0.5 * (1.0 - math.cos(math.pi * phase / tp))
+                elif phase < tp + tn:
+                    buzz = math.cos(math.pi * (phase - tp) / (2.0 * tn))
+                else:
+                    buzz = 0.0
             else:
                 buzz = 2.0 * phase - 1.0 - _poly_blep(phase, dt)
 
-            f_res[0].set(f1 * formant_scale * mouth_scale, 70.0)
-            f_res[1].set(f2 * formant_scale, 110.0)
-            f_res[2].set(f3 * formant_scale, 180.0)
+            # Formants, kept ordered and away from Nyquist. Crossing F1/F2 is
+            # what turns a scaled-up preset into noise: the resonators merge.
+            fa = f1 * mouth_scale
+            fb = f2 * throat_scale
+            fc = f3
+            fa = max(150.0, min(fa, fb - 120.0))
+            fb = max(fa + 120.0, min(fb, fc - 150.0))
+            fc = max(fb + 150.0, min(fc, 0.45 * SR))
 
-            y = f_res[0].run(buzz * va)
-            y = f_res[1].run(y)
-            y = f_res[2].run(y)
+            if engine == "cascade":
+                f_res[0].set(fa, _bandwidth(fa))
+                f_res[1].set(fb, _bandwidth(fb))
+                f_res[2].set(fc, _bandwidth(fc))
+                y = f_res[0].run(buzz * va)
+                y = f_res[1].run(y)
+                y = f_res[2].run(y)
+            else:
+                y = 0.0
+                for k, fk in enumerate((fa, fb, fc)):
+                    f_res[k].set(fk, _bandwidth(fk))
+                    y += f_res[k].run(buzz * va) * FORMANT_GAIN[k]
 
             if na > 1e-4:
                 n_res.set(nh, noise_bw)

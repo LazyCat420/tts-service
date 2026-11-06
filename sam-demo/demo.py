@@ -295,6 +295,14 @@ articulation is SAM's.</p>
 </section>''' for n, p in PRESETS.items())}
 </div>
 
+<h3>Ten ways to make speech out of waves</h3>
+<p class="lede">A separate page runs one sentence through ten families of technique —
+cascade vs parallel resonators, additive harmonics, a glottal pulse source, LPC
+resynthesis, PSOLA length and pitch changes, sinusoidal modelling, and the naive
+resampler that gets it wrong — with the formula under each and the measured
+harmonicity, zero-crossing rate and formant contrast.
+<a href="experiments.html">Open the experiments page</a>.</p>
+
 <h3>Same sentence, six presets</h3>
 <p class="lede">The four numbers are SAM's own parameters from the 1982 manual.
 Only they change between clips — the text and the synth are identical.</p>
@@ -346,13 +354,19 @@ throat  0-255  formant scale = (throat/128)^0.75   (all three formants)
 mouth   0-255  F1 scale      = (mouth/128)^0.75    (apparent mouth size)</pre>
 
 <h3>How it works</h3>
+<p class="lede">Knob semantics follow the real engine, measured on the port: <code>mouth</code>
+scales F1 only, <code>throat</code> scales F2 only, F3 is untouched (128 = unchanged).
+Formants are kept ordered (<code>F1 &lt; F2 &lt; F3 &lt; 0.45·SR</code>) and their bandwidth
+grows with frequency — the fixed 70/110/180 Hz and the cascade's <code>(F/bw)³</code> gain
+were what made the scaled-up presets scream.</p>
 <pre>text ──reciter──→ phonemes ──render──→ wav
                    |
                    +-- rules: digraphs, soft c/g, magic-e, r-coloured vowels,
                        plus a small pronunciation lexicon
 
-buzz = polyBLEP sawtooth at f0, 18% pitch declination over the utterance
-out  = buzz·voiced ─→ F1 ─→ F2 ─→ F3     (2-pole resonators, bw 70/110/180 Hz)
+buzz = polyBLEP sawtooth (or Rosenberg pulse) at f0, 18% declination
+out  = buzz·voiced ─→ F1, F2, F3 in parallel, gains 1.0/0.55/0.30
+                     (2-pole resonators, bw = 0.06·f + 50 Hz)
      + noise·fricative ─→ resonator at the fricative band</pre>
 <p class="lede">Formant values are adult-male phonetics tables; stops are rendered
 as closure + burst; diphthongs interpolate between two vowel targets. Target
@@ -367,6 +381,38 @@ python3 demo.py          # rebuilds audio/, spec/, index.html and README.md</pre
 """
     with open(os.path.join(HERE, "index.html"), "w") as f:
         f.write(doc)
+
+
+def _exp_table() -> str:
+    import json
+    path = os.path.join(HERE, "experiments.json")
+    if not os.path.exists(path):
+        return ""
+    stats = json.load(open(path))
+    titles = {"cascade": "Cascade resonators", "parallel": "Parallel resonators (default)",
+              "pulse": "Glottal pulse source", "additive": "Additive harmonics",
+              "lpc": "LPC resynthesis", "psola-len": "PSOLA, length x1.6",
+              "psola-pit": "PSOLA, pitch x1.3", "hnm": "Sinusoidal + noise (HNM)",
+              "resample": "Naive resampling (wrong)", "sam": "1982 engine (reference)"}
+    rows = "\n".join(
+        f"| {titles[k]} | {v['dur']:.2f} s | {v['harm'] * 100:.1f}% | {v['zcr']:.0f} | {v['contrast']:.0f}x |"
+        for k, v in stats.items() if k in titles)
+    return f"""## Ten renderings of one sentence
+
+`experiments.py` builds `experiments.html`: one sentence through every family of
+technique, each with its formula and measured numbers.
+
+| Rendering | duration | harmonicity | zero-crossings/s | formant contrast |
+|---|---|---|---|---|
+{rows}
+
+Harmonicity = share of 0-10 kHz energy within +-40 Hz of a harmonic of f0.
+Zero-crossings/s well above 2*f0 means high-frequency hash dominates. Formant
+contrast = loudest peak over the median level in 200-3500 Hz; low means the
+formants merged into mush. Note the 1982 engine scores 67%: its 4-bit output is
+deliberately noisy, so these numbers rank *smoothness*, not naturalness.
+
+"""
 
 
 def write_readme(preset_clips, phrase_clips, clarity, cv_clips, faithful, ab_metrics) -> None:
@@ -409,6 +455,12 @@ intelligible. The step count is not a defect: SAM writes 8-bit PCM through a
 | File | What |
 |---|---|
 | `sam.py` | clean-room synth: reciter, phoneme table, renderer, CLI |
+| `methods.py` | four renderers (cascade, parallel, additive, glottal pulse) for A/B listening |
+| `experiments.py` | builds `experiments.html`: one sentence through ten techniques |
+| `lpc.py` | LPC analysis + resynthesis (Levinson-Durbin, pulse/noise excitation) |
+| `psola.py` | PSOLA pitch marks and TD-PSOLA time/pitch modification |
+| `hnm.py` | sinusoidal modelling + noise residual (HNM) |
+| `RESEARCH-WAVES-TO-SPEECH.md` | the math behind every technique, with sources and labels |
 | `sam_engine/` | faithful port: `parse.py` (reciter + parser), `render.py` (renderer), `tables.py` |
 | `sam_faithful.py` | wrapper around the port: `faithful_say(text, path, pitch, speed, mouth, throat)` |
 | `computer_voices.py` | five DSP-only "computer sound" voices (chip, vocoder, ring, crush, blips) |
@@ -425,6 +477,30 @@ intelligible. The step count is not a defect: SAM writes 8-bit PCM through a
 
 `audio/` and `spec/` are generated and gitignored (~4.3 MB); run `python3 demo.py`
 to rebuild them, then open `index.html`.
+
+## Renderer: what changed and why
+
+The first renderer was a cascade: sawtooth → F1 → F2 → F3, fixed bandwidths
+70/110/180 Hz, with `throat` scaling all three formants by `(throat/128)^0.75`
+and `mouth` scaling F1 upward. That is wrong on both counts, measured against
+the ported engine:
+
+- **Knob semantics.** In the real engine `mouth` scales **F1 only** and
+  `throat` scales **F2 only** (factor 128 = unchanged, linear); F3 is untouched.
+- **Cascade gain.** Each cascade stage is normalised to unity gain at DC, so the
+  product peaks as `(F/bw)^3`. Push the formants up and F3 dominates — the voice
+  screams. The parallel branch gives each formant an explicit gain
+  (1.0 / 0.55 / 0.30) and keeps the balance.
+- **Bandwidth.** A fixed 70/110/180 Hz is right only near the default voice.
+  Bandwidth now grows with centre frequency: `bw = 0.06·f + 50 Hz`.
+- **Ordering.** Formants are clamped to `F1 < F2 < F3 < 0.45·SR`; crossing them
+  is what turns a scaled-up preset into noise.
+
+Effect on the presets that sounded like noise (harmonicity / zero-crossings):
+Elf 78.4% → 88.0%, 1249 → 1023/s; Little Old Lady 60.1% → 98.1% harmonicity,
+1949 → 1820/s; Extra-Terrestrial 90.1% → 84.7%, 3031 → 2536/s. The parallel
+branch is now the default (`engine="parallel"`); `engine="cascade"` keeps the old
+path for comparison.
 
 ## Presets (the 1982 manual's values)
 

@@ -119,6 +119,14 @@ articulation is SAM's.</p>
 </section>
 </div>
 
+<h3>Ten ways to make speech out of waves</h3>
+<p class="lede">A separate page runs one sentence through ten families of technique —
+cascade vs parallel resonators, additive harmonics, a glottal pulse source, LPC
+resynthesis, PSOLA length and pitch changes, sinusoidal modelling, and the naive
+resampler that gets it wrong — with the formula under each and the measured
+harmonicity, zero-crossing rate and formant contrast.
+<a href="experiments.html">Open the experiments page</a>.</p>
+
 <h3>Same sentence, six presets</h3>
 <p class="lede">The four numbers are SAM's own parameters from the 1982 manual.
 Only they change between clips — the text and the synth are identical.</p>
@@ -263,13 +271,19 @@ throat  0-255  formant scale = (throat/128)^0.75   (all three formants)
 mouth   0-255  F1 scale      = (mouth/128)^0.75    (apparent mouth size)</pre>
 
 <h3>How it works</h3>
+<p class="lede">Knob semantics follow the real engine, measured on the port: <code>mouth</code>
+scales F1 only, <code>throat</code> scales F2 only, F3 is untouched (128 = unchanged).
+Formants are kept ordered (<code>F1 &lt; F2 &lt; F3 &lt; 0.45·SR</code>) and their bandwidth
+grows with frequency — the fixed 70/110/180 Hz and the cascade's <code>(F/bw)³</code> gain
+were what made the scaled-up presets scream.</p>
 <pre>text ──reciter──→ phonemes ──render──→ wav
                    |
                    +-- rules: digraphs, soft c/g, magic-e, r-coloured vowels,
                        plus a small pronunciation lexicon
 
-buzz = polyBLEP sawtooth at f0, 18% pitch declination over the utterance
-out  = buzz·voiced ─→ F1 ─→ F2 ─→ F3     (2-pole resonators, bw 70/110/180 Hz)
+buzz = polyBLEP sawtooth (or Rosenberg pulse) at f0, 18% declination
+out  = buzz·voiced ─→ F1, F2, F3 in parallel, gains 1.0/0.55/0.30
+                     (2-pole resonators, bw = 0.06·f + 50 Hz)
      + noise·fricative ─→ resonator at the fricative band</pre>
 <p class="lede">Formant values are adult-male phonetics tables; stops are rendered
 as closure + burst; diphthongs interpolate between two vowel targets. Target
