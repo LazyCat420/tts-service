@@ -127,6 +127,55 @@ Only they change between clips — the text and the synth are identical.</p>
     </section>
 </div>
 
+<h3>Clear vs fuzzy — what changed</h3>
+<p class="lede">Same text, same synth. “Before” has no output band-limiting and the
+raw white-noise path (gain 1.4, bandwidth 1200 Hz); “after” band-limits at 80 Hz–4.8 kHz
+and tightens the noise (gain 0.35, bandwidth 700 Hz). Measured on the before clip:
+6.11% of the energy above 5 kHz and 2192 sample steps over 25% of peak — that is the
+distorted hiss. After: 0.14% and 0.</p>
+<section class="card">
+  <h2>Before</h2>
+  <audio controls preload="none" src="audio/clarity-before.wav"></audio>
+<img class="spec" src="spec/clarity-before.png" alt="spectrogram">
+</section>
+<section class="card">
+  <h2>After</h2>
+  <audio controls preload="none" src="audio/clarity-after.wav"></audio>
+<img class="spec" src="spec/clarity-after.png" alt="spectrogram">
+</section>
+
+<h3>Voices made of computer sounds</h3>
+<p class="lede">Five DSP-only techniques, all driven by the same synth. None uses a
+sample or a neural net.</p>
+<div class="grid">
+<section class="card">
+  <h2>chip</h2>
+  <p class="says">square source through the formant cascade</p>
+  <audio controls preload="none" src="audio/cv-chip.wav"></audio>
+<img class="spec" src="spec/cv-chip.png" alt="spectrogram">
+</section><section class="card">
+  <h2>vocoder</h2>
+  <p class="says">16-band envelopes onto a 110 Hz square carrier</p>
+  <audio controls preload="none" src="audio/cv-vocoder.wav"></audio>
+<img class="spec" src="spec/cv-vocoder.png" alt="spectrogram">
+</section><section class="card">
+  <h2>ring</h2>
+  <p class="says">ring modulation, 45 Hz, 35% wet</p>
+  <audio controls preload="none" src="audio/cv-ring.wav"></audio>
+<img class="spec" src="spec/cv-ring.png" alt="spectrogram">
+</section><section class="card">
+  <h2>crush</h2>
+  <p class="says">8-bit, sample-and-hold 2, TPDF dither</p>
+  <audio controls preload="none" src="audio/cv-crush.wav"></audio>
+<img class="spec" src="spec/cv-crush.png" alt="spectrogram">
+</section><section class="card">
+  <h2>blips</h2>
+  <p class="says">one square blip per letter, 20/s</p>
+  <audio controls preload="none" src="audio/cv-blips.wav"></audio>
+<img class="spec" src="spec/cv-blips.png" alt="spectrogram">
+</section>
+</div>
+
 <h3>Presets</h3>
 <table>
 <tr><th>Preset</th><th>Speed</th><th>Pitch</th><th>Throat</th><th>Mouth</th></tr>

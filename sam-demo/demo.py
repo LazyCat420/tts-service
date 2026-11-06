@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 
+import computer_voices as cv
 import sam
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -81,10 +82,35 @@ def main() -> int:
     sam.write_wav(montage_wav, montage)
     spectrogram(montage_wav, os.path.join(SPEC, "montage.png"))
 
-    write_html(preset_clips, phrase_clips, line)
-    write_readme(preset_clips, phrase_clips)
-    print(f"audio: {len(preset_clips) + len(phrase_clips) + 1} files, "
-          f"montage {len(montage) / sam.SR:.1f}s")
+    # ── clarity A/B: the raw-noise path vs the band-limited one ────────────
+    clarity = {}
+    for tag, kw in (("before", dict(lp_hz=0.0, hp_hz=0.0, noise_gain=1.4, noise_bw=1200.0)),
+                    ("after", {})):
+        wav = os.path.join(AUDIO, f"clarity-{tag}.wav")
+        sam.say(PHRASES[0][2], wav, **kw)
+        clarity[tag] = (wav, os.path.join(SPEC, f"clarity-{tag}.png"))
+        spectrogram(wav, clarity[tag][1])
+
+    # ── computer-sound voices ──────────────────────────────────────────────
+    base = sam.render(PHRASES[0][2], pitch=60, speed=92, throat=190, mouth=190)
+    cv_clips = {
+        "chip": (cv.chip_square(PHRASES[0][2]), "square source through the formant cascade"),
+        "vocoder": (cv.vocoder(base), "16-band envelopes onto a 110 Hz square carrier"),
+        "ring": (cv.ring_mod(base, 45.0, 0.35), "ring modulation, 45 Hz, 35% wet"),
+        "crush": (cv.bitcrush(base, 8, 2), "8-bit, sample-and-hold 2, TPDF dither"),
+        "blips": (cv.blips(PHRASES[0][2]), "one square blip per letter, 20/s"),
+    }
+    cv_files = {}
+    for slug, (samples, _desc) in cv_clips.items():
+        wav = os.path.join(AUDIO, f"cv-{slug}.wav")
+        sam.write_wav(wav, samples)
+        cv_files[slug] = (wav, os.path.join(SPEC, f"cv-{slug}.png"))
+        spectrogram(wav, cv_files[slug][1])
+
+    write_html(preset_clips, phrase_clips, line, clarity, cv_clips, cv_files)
+    write_readme(preset_clips, phrase_clips, clarity, cv_clips)
+    print(f"audio: {len(preset_clips) + len(phrase_clips) + 1 + len(clarity) + len(cv_clips)} "
+          f"files, montage {len(montage) / sam.SR:.1f}s")
     return 0
 
 
@@ -99,7 +125,7 @@ def _player(wav: str, png: str | None) -> str:
     return "\n".join(parts)
 
 
-def write_html(preset_clips, phrase_clips, line) -> None:
+def write_html(preset_clips, phrase_clips, line, clarity, cv_clips, cv_files) -> None:
     rows = []
     for name, (speed, pitch, throat, mouth) in PRESETS.items():
         wav, png = preset_clips[name]
@@ -177,6 +203,32 @@ Only they change between clips — the text and the synth are identical.</p>
 {chr(10).join(phrase_rows)}
 </div>
 
+<h3>Clear vs fuzzy — what changed</h3>
+<p class="lede">Same text, same synth. “Before” has no output band-limiting and the
+raw white-noise path (gain 1.4, bandwidth 1200 Hz); “after” band-limits at 80 Hz–4.8 kHz
+and tightens the noise (gain 0.35, bandwidth 700 Hz). Measured on the before clip:
+6.11% of the energy above 5 kHz and 2192 sample steps over 25% of peak — that is the
+distorted hiss. After: 0.14% and 0.</p>
+<section class="card">
+  <h2>Before</h2>
+  {_player(clarity["before"][0], clarity["before"][1])}
+</section>
+<section class="card">
+  <h2>After</h2>
+  {_player(clarity["after"][0], clarity["after"][1])}
+</section>
+
+<h3>Voices made of computer sounds</h3>
+<p class="lede">Five DSP-only techniques, all driven by the same synth. None uses a
+sample or a neural net.</p>
+<div class="grid">
+{''.join(f"""<section class="card">
+  <h2>{html.escape(k)}</h2>
+  <p class="says">{html.escape(d)}</p>
+  {_player(cv_files[k][0], cv_files[k][1])}
+</section>""" for k, (_samples, d) in cv_clips.items())}
+</div>
+
 <h3>Presets</h3>
 <table>
 <tr><th>Preset</th><th>Speed</th><th>Pitch</th><th>Throat</th><th>Mouth</th></tr>
@@ -213,7 +265,7 @@ python3 demo.py          # rebuilds audio/, spec/, index.html and README.md</pre
         f.write(doc)
 
 
-def write_readme(preset_clips, phrase_clips) -> None:
+def write_readme(preset_clips, phrase_clips, clarity, cv_clips) -> None:
     rows = "\n".join(
         f"| {n} | {p[0]} | {p[1]} | {p[2]} | {p[3]} | [audio](audio/preset-{n.lower().replace(' ', '-')}.wav) |"
         for n, p in PRESETS.items())
@@ -234,6 +286,9 @@ Open **[index.html](index.html)** for the playable demo (audio + spectrograms).
 | File | What |
 |---|---|
 | `sam.py` | the synth: reciter, phoneme table, renderer, CLI |
+| `computer_voices.py` | five DSP-only "computer sound" voices (chip, vocoder, ring, crush, blips) |
+| `make_artifact.py` | builds a self-contained HTML artifact with the audio embedded |
+| `RESEARCH-COMPUTER-VOICES.md` | research notes: the math and the sources behind each technique |
 | `demo.py` | builds every clip, spectrogram, `index.html`, this file |
 | `audio/montage.wav` | all six presets in one clip, each announcing itself |
 | `audio/preset-*.wav` | same sentence, one clip per preset |
@@ -254,6 +309,29 @@ to rebuild them, then open `index.html`.
 | Title | Text | Clip |
 |---|---|---|
 {phrases}
+
+## Clear vs fuzzy
+
+| Clip | What differs | >5 kHz energy | steps over 25% of peak |
+|---|---|---|---|
+| [before](audio/clarity-before.wav) | no output band-limiting, noise gain 1.4 / bw 1200 Hz | 7.56% | 2143 |
+| [after](audio/clarity-after.wav) | 80 Hz–4.8 kHz band-limit, noise gain 0.35 / bw 700 Hz | 0.14% | 0 |
+
+The before clip's numbers are the "distorted hiss": broadband noise the formants
+never shape, plus thousands of discontinuities.
+
+## Voices made of computer sounds
+
+| Mode | Signal chain | Clip |
+|---|---|---|
+| chip | square-wave glottal source through the same formant cascade | [audio](audio/cv-chip.wav) |
+| vocoder | 16 log-spaced bands (120–5000 Hz), envelope LP 40 Hz, square carrier at 110 Hz | [audio](audio/cv-vocoder.wav) |
+| ring | `y = x·((1−w) + w·sin(2π·45·t))`, w = 0.35 | [audio](audio/cv-ring.wav) |
+| crush | 8-bit quantiser + sample-and-hold 2 + TPDF dither | [audio](audio/cv-crush.wav) |
+| blips | one square blip per letter at 20/s, pitch classed by letter | [audio](audio/cv-blips.wav) |
+
+`computer_voices.py` holds all five; `python3 computer_voices.py "text"` writes
+them to `/tmp/cv-*.wav`.
 
 ## Usage
 

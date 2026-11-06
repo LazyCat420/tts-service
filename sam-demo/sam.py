@@ -320,9 +320,59 @@ def _poly_blep(t: float, dt: float) -> float:
     return 0.0
 
 
+class Biquad:
+    """RBJ cookbook biquad, used for the output band-limiting."""
+
+    __slots__ = ("b0", "b1", "b2", "a1", "a2", "x1", "x2", "y1", "y2")
+
+    def __init__(self):
+        self.b0 = self.b1 = self.b2 = self.a1 = self.a2 = 0.0
+        self.x1 = self.x2 = self.y1 = self.y2 = 0.0
+
+    def lowpass(self, f: float, q: float = 0.7071):
+        w = 2.0 * math.pi * f / SR
+        c, s = math.cos(w), math.sin(w)
+        alpha = s / (2.0 * q)
+        a0 = 1.0 + alpha
+        self.b0 = (1.0 - c) / 2.0 / a0
+        self.b1 = (1.0 - c) / a0
+        self.b2 = self.b0
+        self.a1 = -2.0 * c / a0
+        self.a2 = (1.0 - alpha) / a0
+
+    def highpass(self, f: float, q: float = 0.7071):
+        w = 2.0 * math.pi * f / SR
+        c, s = math.cos(w), math.sin(w)
+        alpha = s / (2.0 * q)
+        a0 = 1.0 + alpha
+        self.b0 = (1.0 + c) / 2.0 / a0
+        self.b1 = -(1.0 + c) / a0
+        self.b2 = self.b0
+        self.a1 = -2.0 * c / a0
+        self.a2 = (1.0 - alpha) / a0
+
+    def run(self, x: float) -> float:
+        y = (self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
+             - self.a1 * self.y1 - self.a2 * self.y2)
+        self.x2, self.x1 = self.x1, x
+        self.y2, self.y1 = self.y1, y
+        return y
+
+
+def _alpha(tau_ms: float) -> float:
+    """One-pole coefficient for a time constant in ms: a = 1 - e^(-1/(tau·fs))."""
+    return 1.0 - math.exp(-1.0 / (tau_ms * 1e-3 * SR))
+
+
 def synth(phonemes: list[str], pitch=64, speed=72, throat=128, mouth=128,
-          sr: int = SR, seed: int = 7) -> list[float]:
-    """Render a phoneme list to floats in [-1, 1]."""
+          sr: int = SR, seed: int = 7, source: str = "saw",
+          lp_hz: float = 4800.0, hp_hz: float = 80.0,
+          noise_gain: float = 0.35, noise_bw: float = 700.0) -> list[float]:
+    """Render a phoneme list to floats in [-1, 1].
+
+    `source`: "saw" (glottal buzz, SAM-like) or "square" (chip voice).
+    `lp_hz`/`hp_hz`: output band-limiting; 0 disables.
+    """
     f0_base = 20.0 + pitch * 1.15          # pitch 64 → ~94 Hz
     formant_scale = (throat / 128.0) ** 0.75
     mouth_scale = (mouth / 128.0) ** 0.75
@@ -353,6 +403,11 @@ def synth(phonemes: list[str], pitch=64, speed=72, throat=128, mouth=128,
     rng = random.Random(seed)
     f_res = [_Res(), _Res(), _Res()]
     n_res = _Res()
+    lp, hp = Biquad(), Biquad()
+    if lp_hz:
+        lp.lowpass(lp_hz)
+    if hp_hz:
+        hp.highpass(hp_hz)
 
     f1 = segs[0][0]
     f2 = segs[0][1]
@@ -365,8 +420,8 @@ def synth(phonemes: list[str], pitch=64, speed=72, throat=128, mouth=128,
     total = sum(s[6] for s in segs) * dur_scale
     out: list[float] = []
     phase = 0.0
-    fs = 0.25          # formant smoothing coefficient per sample (~15 ms)
-    asm = 0.12         # amplitude smoothing (~5 ms)
+    fs = _alpha(15.0)  # formant glide: 15 ms time constant
+    asm = _alpha(5.0)  # amplitude glide: 5 ms (0.12 was ~0.36 ms → roughness)
     elapsed = 0.0
 
     for seg in segs:
@@ -391,7 +446,11 @@ def synth(phonemes: list[str], pitch=64, speed=72, throat=128, mouth=128,
             if phase >= 1.0:
                 phase -= 1.0
             dt = f0 / sr
-            buzz = 2.0 * phase - 1.0 - _poly_blep(phase, dt)
+            if source == "square":
+                buzz = (1.0 if phase < 0.5 else -1.0) \
+                    + _poly_blep(phase, dt) - _poly_blep((phase + 0.5) % 1.0, dt)
+            else:
+                buzz = 2.0 * phase - 1.0 - _poly_blep(phase, dt)
 
             f_res[0].set(f1 * formant_scale * mouth_scale, 70.0)
             f_res[1].set(f2 * formant_scale, 110.0)
@@ -402,9 +461,16 @@ def synth(phonemes: list[str], pitch=64, speed=72, throat=128, mouth=128,
             y = f_res[2].run(y)
 
             if na > 1e-4:
-                n_res.set(nh, 1200.0)
-                y += n_res.run(rng.uniform(-1.0, 1.0) * na) * 1.4
+                n_res.set(nh, noise_bw)
+                y += n_res.run(rng.uniform(-1.0, 1.0) * na) * noise_gain
 
+            # Band-limit the output: without this the raw noise path leaves
+            # 6% of the energy above 5 kHz and thousands of 25%-of-peak sample
+            # steps (measured) — that is the "distorted hiss".
+            if lp_hz:
+                y = lp.run(y)
+            if hp_hz:
+                y = hp.run(y)
             out.append(y)
             elapsed += 1.0 / sr
 
@@ -428,12 +494,12 @@ def write_wav(path: str, samples: list[float], sr: int = SR):
         w.writeframes(bytes(frames))
 
 
-def render(text: str, pitch=64, speed=72, throat=128, mouth=128) -> list[float]:
-    return synth(reciter(text), pitch, speed, throat, mouth)
+def render(text: str, pitch=64, speed=72, throat=128, mouth=128, **kw) -> list[float]:
+    return synth(reciter(text), pitch, speed, throat, mouth, **kw)
 
 
-def say(text: str, path: str, pitch=64, speed=72, throat=128, mouth=128):
-    samples = render(text, pitch, speed, throat, mouth)
+def say(text: str, path: str, pitch=64, speed=72, throat=128, mouth=128, **kw):
+    samples = render(text, pitch, speed, throat, mouth, **kw)
     write_wav(path, samples)
     return samples
 

@@ -12,6 +12,9 @@ Open **[index.html](index.html)** for the playable demo (audio + spectrograms).
 | File | What |
 |---|---|
 | `sam.py` | the synth: reciter, phoneme table, renderer, CLI |
+| `computer_voices.py` | five DSP-only "computer sound" voices (chip, vocoder, ring, crush, blips) |
+| `make_artifact.py` | builds a self-contained HTML artifact with the audio embedded |
+| `RESEARCH-COMPUTER-VOICES.md` | research notes: the math and the sources behind each technique |
 | `demo.py` | builds every clip, spectrogram, `index.html`, this file |
 | `audio/montage.wav` | all six presets in one clip, each announcing itself |
 | `audio/preset-*.wav` | same sentence, one clip per preset |
@@ -41,6 +44,29 @@ to rebuild them, then open `index.html`.
 | Drift King line | “Oh my god. Whoa. Watch out for that car.” | [audio](audio/phrase-drift.wav) |
 | Pangram | “The quick brown fox jumps over the lazy dog.” | [audio](audio/phrase-pangram.wav) |
 | About this service | “Drift King needs voices. Let us build our own.” | [audio](audio/phrase-tts.wav) |
+
+## Clear vs fuzzy
+
+| Clip | What differs | >5 kHz energy | steps over 25% of peak |
+|---|---|---|---|
+| [before](audio/clarity-before.wav) | no output band-limiting, noise gain 1.4 / bw 1200 Hz | 7.56% | 2143 |
+| [after](audio/clarity-after.wav) | 80 Hz–4.8 kHz band-limit, noise gain 0.35 / bw 700 Hz | 0.14% | 0 |
+
+The before clip's numbers are the "distorted hiss": broadband noise the formants
+never shape, plus thousands of discontinuities.
+
+## Voices made of computer sounds
+
+| Mode | Signal chain | Clip |
+|---|---|---|
+| chip | square-wave glottal source through the same formant cascade | [audio](audio/cv-chip.wav) |
+| vocoder | 16 log-spaced bands (120–5000 Hz), envelope LP 40 Hz, square carrier at 110 Hz | [audio](audio/cv-vocoder.wav) |
+| ring | `y = x·((1−w) + w·sin(2π·45·t))`, w = 0.35 | [audio](audio/cv-ring.wav) |
+| crush | 8-bit quantiser + sample-and-hold 2 + TPDF dither | [audio](audio/cv-crush.wav) |
+| blips | one square blip per letter at 20/s, pitch classed by letter | [audio](audio/cv-blips.wav) |
+
+`computer_voices.py` holds all five; `python3 computer_voices.py "text"` writes
+them to `/tmp/cv-*.wav`.
 
 ## Usage
 
