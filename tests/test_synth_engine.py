@@ -32,6 +32,45 @@ class TestSynthEngine(unittest.TestCase):
             self.assertGreater(f0.size, 10)
             self.assertTrue(np.all(np.isfinite(f0)))
 
+    def test_connected_speech_cadence_and_flapping(self) -> None:
+        # 1. Connected speech: running sentences carry no inter-word "_"
+        #    gap phones; words link across boundaries like human speech.
+        phs = reciter.reciter("I am a little robot.")
+        self.assertTrue(all(p.name != "_" for p in phs))
+
+        # 2. Intervocalic flapping: "little" -> L IH DX AX L and
+        #    "automatic" -> AO DX AX M AE DX IH K surface alveolar taps.
+        self.assertIn("DX", [p.name for p in reciter.reciter("A little automatic robot.")])
+
+        # 3. Function words reduce to stress 0; content words keep a
+        #    stressed vowel.
+        text = "I come from the little robot."
+        words = text.strip(".").split()
+        function_words = {"a", "the", "to", "for", "from"}
+        content_words = {"I", "come", "little", "robot"}
+        by_word: dict[int, list[reciter.Phone]] = {}
+        for p in reciter.reciter(text):
+            by_word.setdefault(p.word, []).append(p)
+        for idx, word_phones in by_word.items():
+            word = words[idx]
+            if word in function_words:
+                self.assertTrue(all(p.stress == 0 for p in word_phones),
+                                f"function word {word!r} carries stress")
+            elif word in content_words:
+                self.assertTrue(any(p.stress > 0 for p in word_phones
+                                    if p.name in reciter.VOWELS),
+                                f"content word {word!r} has no stressed vowel")
+
+        # 4. Unstressed schwa shortens below the old flat 60 ms robotic
+        #    floor: Klatt phone-specific d_min durations are active.
+        durs, _f0 = prosody.plan(reciter.reciter("I am a little robot."),
+                                 presets.voice("narrator"))
+        unstressed_ax = [d for p, d in zip(phs, durs)
+                         if p.name == "AX" and p.stress == 0]
+        self.assertTrue(unstressed_ax)
+        self.assertTrue(all(d < 0.060 for d in unstressed_ax),
+                        f"unstressed AX durations not below 60 ms: {unstressed_ax}")
+
     def test_frames_invariants_and_whisper_gating(self) -> None:
         phs = reciter.reciter("Watch out for that dog.")
         fr = frames.build(phs, presets.voice("narrator"))
