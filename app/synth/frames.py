@@ -21,6 +21,8 @@ Two deliberate differences from the legacy sam-demo renderer:
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, fields
 
 import numpy as np
@@ -61,6 +63,7 @@ PH = {
     "R": dict(f=[460, 1100, 1600, 3300, 4200], bw=[50, 120, 160, 250, 300], av=0.70, kind="sonorant"),
     "W": dict(f=[290, 610, 2150, 3300, 4200], bw=[50, 90, 180, 250, 300], av=0.60, kind="sonorant"),
     "Y": dict(f=[260, 2070, 3020, 3500, 4200], bw=[50, 90, 160, 250, 300], av=0.60, kind="sonorant"),
+    "DX": dict(f=[420, 1650, 2550, 3300, 4200], bw=[60, 100, 150, 200, 250], av=0.85, kind="flap"),
     # fricatives: fric[k] are the six parallel-band gains, bypass is the
     # flat noise path. Numbers follow Klatt's Table III shape (s = strong
     # 4.9 kHz peak, sh = broad 1.8-4 kHz hump, f/th = weak bypass).
@@ -114,7 +117,7 @@ BURST_AF = 0.01     # stop/affricate burst level, ~-15 dB re a vowel
 VOT_AH = 0.008       # stop aspiration level during the VOT
 
 RAMP_MS = {
-    "vowel": 45.0, "nasal": 50.0, "sonorant": 70.0, "fric": 20.0,
+    "vowel": 45.0, "nasal": 50.0, "sonorant": 70.0, "flap": 18.0, "fric": 20.0,
     "asp": 20.0, "stop": 0.0, "affricate": 0.0, "gap": 25.0,
 }
 
@@ -268,7 +271,7 @@ def _phone_frames(name: str, nf: int, fr: Frames, start: int) -> None:
     if name in STOPS:
         st = STOPS[name]
         closure = max(1, int(round(nf * 0.55)))
-        burst = max(1, int(round(0.008 * FRAME_HZ)))
+        burst = min(max(1, int(round(0.008 * FRAME_HZ))), max(0, nf - closure))
         vot = int(round(st["vot"] / 1000.0 * FRAME_HZ))
         vot = min(vot, max(0, nf - closure - burst))
         rest = max(0, nf - closure - burst - vot)
@@ -278,9 +281,10 @@ def _phone_frames(name: str, nf: int, fr: Frames, start: int) -> None:
         _fill(fr, start, start + closure, locus_f, locus_bw, 0.0)
         start += closure
         # burst: instantaneous frication, never ramped
-        _fill(fr, start, start + burst, locus_f, locus_bw, 0.0, af=BURST_AF,
-              fric=np.array(st["burst"], float), bypass=st["bypass"])
-        start += burst
+        if burst:
+            _fill(fr, start, start + burst, locus_f, locus_bw, 0.0, af=BURST_AF,
+                  fric=np.array(st["burst"], float), bypass=st["bypass"])
+            start += burst
         # aspiration (VOT): noise through the tract at the locus
         if vot:
             _fill(fr, start, start + vot, locus_f, locus_bw, 0.0, ah=VOT_AH)
@@ -294,15 +298,16 @@ def _phone_frames(name: str, nf: int, fr: Frames, start: int) -> None:
     if name in AFFRICATES:
         af = AFFRICATES[name]
         closure = max(1, int(round(nf * 0.45)))
-        burst = max(1, int(round(0.008 * FRAME_HZ)))
+        burst = min(max(1, int(round(0.008 * FRAME_HZ))), max(0, nf - closure))
         rest = max(0, nf - closure - burst)
         locus_f = np.array([300.0, 1800.0, 2600.0, 3400.0, 4200.0])
         locus_bw = np.array([60.0, 120.0, 150.0, 200.0, 250.0])
         _fill(fr, start, start + closure, locus_f, locus_bw, 0.0)
         start += closure
-        _fill(fr, start, start + burst, locus_f, locus_bw, 0.0, af=BURST_AF,
-              fric=np.array(af["burst"], float), bypass=af["bypass"])
-        start += burst
+        if burst:
+            _fill(fr, start, start + burst, locus_f, locus_bw, 0.0, af=BURST_AF,
+                  fric=np.array(af["burst"], float), bypass=af["bypass"])
+            start += burst
         rel = PH[af["release"]]
         _fill(fr, start, start + rest, np.array(rel["f"], float),
               np.array(rel["bw"], float), rel["av"], af=rel["af"],
@@ -393,6 +398,11 @@ def build(phones, voice=None, prosody=None) -> Frames:
     if vtl != 1.0:
         fr.formants *= vtl
     fr.formants = _clamp_formants(fr.formants)
+    # sam-demo's Hz-scaled bandwidth floor: a VTL-scaled-up voice (Little
+    # Robot, Extra-Terrestrial, child, female) keeps table bandwidths while
+    # the formants move up, so the resonators ring with overly narrow Q.
+    # Floor the bandwidths proportionally to the scaled formant Hz.
+    fr.bws = np.maximum(fr.bws, 0.05 * fr.formants + 45.0)
     fr.oq[:] = float(voice.get("oq", 0.5))
     fr.tilt_db[:] = float(voice.get("tilt_db", 6.0))
     fr.f4_gain = float(voice.get("f4_gain", 1.0))
@@ -424,6 +434,19 @@ def build(phones, voice=None, prosody=None) -> Frames:
     f0 = np.where(fr.av > 1e-4, f0, 0.0)
     fr.f0 = f0
     return fr
+
+
+def _smooth_cols(mat: np.ndarray, alpha: float) -> np.ndarray:
+    if mat.shape[0] <= 1 or alpha >= 1.0:
+        return mat
+    out = np.empty_like(mat)
+    cur = mat[0].copy()
+    out[0] = cur
+    b = 1.0 - alpha
+    for i in range(1, mat.shape[0]):
+        cur = b * cur + alpha * mat[i]
+        out[i] = cur
+    return out
 
 
 def interpolate(fr: Frames, n_samples: int) -> Frames:
@@ -473,6 +496,15 @@ def interpolate(fr: Frames, n_samples: int) -> Frames:
         f4_gain=fr.f4_gain,
         f5_gain=fr.f5_gain,
     )
+    # sam-demo's sample-level one-pole exponential Hz smoothing (tau 8 ms):
+    # the piecewise-linear frame ramps keep their slope over 5 ms corners,
+    # and the corner kinks that excite clicks at coefficient updates are
+    # rounded in Hz. Steady vowels are fixed points of the filter, so they
+    # stay identical.
+    sr_est = max(1.0, n_samples * FRAME_HZ / max(fr.n, 1))
+    alpha_f = 1.0 - math.exp(-1.0 / max(1.0, 0.008 * sr_est))
+    out.formants = _clamp_formants(_smooth_cols(out.formants, alpha_f))
+    out.bws = _smooth_cols(out.bws, alpha_f)
     return out
 
 

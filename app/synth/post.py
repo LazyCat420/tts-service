@@ -7,9 +7,10 @@ Four stages, all standard published techniques:
 2. LTAS tilt  : a smooth spectral-slope correction. Natural speech falls about
                 6-9 dB/octave above 500 Hz; formant synthesis tends to be
                 flatter, which reads as "bright" or "harsh".
-3. CELP postfilter: Chen & Gersho (1995) short-term formant postfilter
-                A(z/gamma1)/A(z/gamma2) * (1 - mu z^-1), which deepens
-                inter-formant valleys without tilting the overall spectrum.
+3. CELP postfilter: zero-phase Hz-band formant presence & harmonic clarity
+                enhancer, boosting the average-PSD formant peaks against their
+                local valleys in the 250..3800 Hz band via the STFT magnitude,
+                with the output RMS-matched to the input.
 4. Loudness   : BS.1770 K-weighted, gated integrated loudness, normalised to
                 the voice's target LUFS.
 """
@@ -175,57 +176,58 @@ def ltas_tilt(x: np.ndarray, sr: int, kind: str = "neutral",
 # ── CELP postfilter ────────────────────────────────────────────────────────
 
 
-def _levinson(r: np.ndarray, order: int) -> np.ndarray:
-    a = np.zeros(order + 1)
-    a[0] = 1.0
-    e = r[0]
-    for i in range(1, order + 1):
-        acc = r[i] + np.dot(a[1:i], r[i - 1:0:-1])
-        k = -acc / e if e > 1e-12 else 0.0
-        a[1:i] = a[1:i] + k * a[i - 1:0:-1]
-        a[i] = k
-        e *= (1.0 - k * k)
-        if e <= 1e-12:
-            break
-    return a
-
-
-def _lpc(x: np.ndarray, order: int = 10) -> np.ndarray:
-    n = min(len(x), 16000)
-    r = np.array([np.dot(x[:n - k], x[k:n]) for k in range(order + 1)])
-    if r[0] <= 1e-12:
-        return np.array([1.0] + [0.0] * order)
-    # Use a lag window that stays strictly positive at lag == order.
-    r = r * np.hanning(2 * order + 3)[order + 1:-1] / r[0]
-    return _levinson(r, order)
-
-
 def celp_postfilter(x: np.ndarray, sr: int, strength: float = 0.8,
                     gamma1: float = 0.55, gamma2: float = 0.80,
                     mu: float = 0.45, order: int = 10) -> np.ndarray:
-    """Short-term formant postfilter A(z/gamma1)/A(z/gamma2) * (1 - mu z^-1)."""
+    """Zero-phase Hz-band formant presence & harmonic clarity enhancer.
+
+    Replaces the legacy global LPC-10 postfilter: one time-domain IIR fit
+    across the whole utterance warped harmonic phases and amplified the
+    inter-harmonic valleys. Instead, the average PSD is split into a wide
+    macro spectral trend (~600 Hz moving average) and the local formant
+    peaks (~150 Hz moving average) inside the 250..3800 Hz intelligibility
+    band; the local peak-to-valley contrast is boosted as a smooth, zero-
+    phase magnitude gain applied through the STFT, so harmonic phases stay
+    untouched and only genuine formant peaks are emphasised. The output is
+    RMS-matched to the input, so the overall level is unchanged.
+    """
     if strength <= 0.0:
         return x
-    a = _lpc(x, order)
-    a_g1 = a * (gamma1 ** np.arange(order + 1))
-    a_g2 = a * (gamma2 ** np.arange(order + 1))
-    # Pole-zero formant enhancement: A(z/gamma1) / A(z/gamma2)
-    fir = np.convolve(x, a_g1)[:len(x)]
-    y = np.zeros_like(x)
-    for i, v in enumerate(fir):
-        acc = v
-        for k in range(1, order + 1):
-            acc -= a_g2[k] * (y[i - k] if i >= k else 0.0)
-        y[i] = acc
-    # First-order high-pass tilt compensation (1 - mu z^-1), band-limited
-    # to speech formant range so sibilant noise above 4.2 kHz is not boosted.
-    out = np.empty_like(y)
-    out[0] = y[0]
-    out[1:] = y[1:] - mu * y[:-1]
-    out = _run(out, _biquad("lp", sr, min(4200.0, 0.45 * sr)))
-    g = float(np.sqrt(np.mean(x ** 2)) / max(1e-9, np.sqrt(np.mean(out ** 2))))
-    out *= g
-    return x * (1.0 - strength) + out * strength
+    x = np.asarray(x, float)
+    nfft = min(2048, 2 ** int(math.log2(max(256, len(x)))))
+    if nfft < 1024:
+        return x  # too short for a stable average PSD / STFT overlap-add
+    hop = nfft // 2
+    starts = np.arange(0, max(1, len(x) - nfft + 1), hop)
+    idx = starts[:, None] + np.arange(nfft)[None, :]
+    psd = np.mean(np.abs(np.fft.rfft(x[idx] * np.hanning(nfft), axis=1)) ** 2, axis=0)
+    freqs = np.fft.rfftfreq(nfft, 1.0 / sr)
+    local_db = 10.0 * np.log10(psd + 1e-20)
+
+    def _hz_ma(db: np.ndarray, width_hz: float) -> np.ndarray:
+        half = max(1, int(round(0.5 * width_hz / (sr / nfft))))
+        pad = np.concatenate([np.full(half, db[0]), db, np.full(half, db[-1])])
+        c = np.concatenate([[0.0], np.cumsum(pad)])
+        return (c[2 * half + 1: 2 * half + 1 + len(db)] - c[0:len(db)]) / (2 * half + 1)
+
+    local_db = _hz_ma(local_db, 150.0)
+    macro_db = _hz_ma(10.0 * np.log10(psd + 1e-20), 600.0)
+
+    # Smooth taper: full weight across 250..3800 Hz, easing to 0 dB below
+    # 200 Hz and above 4000 Hz so the enhancer never touches the sub-bass
+    # or the sibilant air band.
+    lo_t = np.clip((freqs - 200.0) / 50.0, 0.0, 1.0)
+    hi_t = np.clip((4000.0 - freqs) / 200.0, 0.0, 1.0)
+    taper = lo_t * hi_t
+    taper = taper * taper * (3.0 - 2.0 * taper)
+    contrast_db = np.clip(local_db - macro_db, -3.0, 4.5) * (0.45 * strength) * taper
+    gain = 10.0 ** (contrast_db / 20.0)
+    y = _stft_apply(x, sr, gain, nfft=nfft)
+    in_rms = float(np.sqrt(np.mean(x ** 2)))
+    out_rms = float(np.sqrt(np.mean(y ** 2)))
+    if in_rms > 1e-9 and out_rms > 1e-9:
+        y = y * (in_rms / out_rms)
+    return y
 
 
 # ── loudness ───────────────────────────────────────────────────────────────
@@ -280,10 +282,12 @@ def match_loudness(x: np.ndarray, sr: int, target_lufs: float = -16.0,
 
 def finish(x: np.ndarray, sr: int, voice: dict | None = None) -> np.ndarray:
     """Run the post chain described by `voice['post']`."""
-    post = (voice or {}).get("post", {})
+    v = voice or {}
+    post = v.get("post", {})
+    default_celp = 0.0 if float(v.get("whisper", 0.0)) > 0.0 else 0.45
     y = np.asarray(x, float)
     y = deess(y, sr, float(post.get("deess", 0.0)))
     y = ltas_tilt(y, sr, post.get("ltas", "neutral"))
-    y = celp_postfilter(y, sr, float(post.get("celp", 0.0)))
+    y = celp_postfilter(y, sr, float(post.get("celp", default_celp)))
     y = match_loudness(y, sr, float(post.get("lufs", -16.0)))
     return y

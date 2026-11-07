@@ -9,7 +9,7 @@ _FRIC_F = (500.0, 1000.0, 1800.0, 2800.0, 3800.0, 4900.0)
 _FRIC_BW = (400.0, 500.0, 600.0, 800.0, 1000.0, 1000.0)
 _HOP = 16  # samples between coefficient updates
 TILT_HZ = 400.0  # corner of the two-pole source tilt
-ASP_SCALE = 0.5  # noise level at ah=1 relative to the voicing source
+ASP_SCALE = 0.12  # noise level at ah=1 relative to the voicing source
 
 
 def _res_coef(f, bw, sr):
@@ -152,34 +152,61 @@ def render(frames, sr=22050, rng=None, source="klglott88"):
     # carries a 20 dB low-frequency bump (measured) that drowned F2..F5 under
     # the F1 resonance, whatever the branch gains were.
     bus = [0.0] * n
-    phase_left = 0.0  # samples remaining in the current period
-    T = 1.0
+    # Sub-sample fractional Blackman-windowed-sinc glottal impulse train on a
+    # continuous phase accumulator (sam-demo/methods.py `phase += f0 / sr`).
+    # The old loop deposited a delta at integer samples, quantising every
+    # pitch period to a whole number of samples; on steady vowels that
+    # sample-grid quantisation reads as pitch grain. The 8-tap Blackman
+    # windowed sinc is deposited at the exact fractional closure instant and
+    # is normalised to unity sum, so its gain is flat across the speech band
+    # (0..4800 Hz) and the < 1.0 dB formant-peak calibration on /AA/ is
+    # untouched. The 3-sine vibrato flutter is gone and jitter/shimmer are
+    # 10x smaller, so periods stay phase-coherent instead of wobbly.
+    imp_buf = [0.0] * (n + 8)
+    phase = 0.0
+    dt = 0.0
     ar_j = ar_s = 0.0
     k_ar = math.sqrt(1.0 - 0.99 ** 2)
     t1 = t2 = 0.0
     tilt_d = math.exp(-2.0 * math.pi * TILT_HZ / sr)
     tilt_g = 1.0 - tilt_d
-    last_f0 = 100.0
     for i in range(n):
-        imp = 0.0
-        if phase_left <= 0.0:
-            f0 = f0l[i]
-            if f0 > 0.0:
-                last_f0 = f0
-                tsec = i / sr
-                fl = (1.0 / 50.0) * (f0 / 100.0) * (
-                    math.sin(math.pi * 12.7 * tsec) + math.sin(math.pi * 7.1 * tsec)
-                    + math.sin(math.pi * 4.7 * tsec)) * 10.0
+        f0 = f0l[i]
+        if f0 > 0.0:
+            fe = max(f0, 20.0) * (1.0 + 0.0004 * ar_j)
+            dt = fe / sr
+            phase += dt
+            if phase >= 1.0:
+                phase -= 1.0
                 ar_j = 0.99 * ar_j + k_ar * float(rng.standard_normal())
                 ar_s = 0.99 * ar_s + k_ar * float(rng.standard_normal())
-                fe = max(f0 + fl, 20.0) * (1.0 + 0.004 * ar_j)
-                T = sr / fe
-                imp = avl[i] * (1.0 + 0.010 * ar_s)
-            else:
-                T = sr / last_f0
-            phase_left += T
-        phase_left -= 1.0
-        t1 = tilt_g * imp + tilt_d * t1
+                amp = avl[i] * (1.0 + 0.001 * ar_s)
+                mu = min(max(phase / max(dt, 1e-9), 0.0), 1.0)
+                taps = [0.0] * 8
+                tsum = 0.0
+                for m in range(-3, 5):
+                    x = m + mu
+                    if abs(x) < 1e-9:
+                        sc = 1.0
+                    else:
+                        px = math.pi * x
+                        sc = math.sin(px) / px
+                    u = (x + 3.5) / 7.0
+                    if u < 0.0:
+                        u = 0.0
+                    elif u > 1.0:
+                        u = 1.0
+                    w = (0.42 - 0.5 * math.cos(2.0 * math.pi * u)
+                         + 0.08 * math.cos(4.0 * math.pi * u))
+                    taps[m + 3] = sc * w
+                    tsum += taps[m + 3]
+                if tsum != 0.0:
+                    scale = amp / tsum
+                    for m in range(-3, 5):
+                        j = i + m
+                        if 0 <= j < n + 8:
+                            imp_buf[j] += taps[m + 3] * scale
+        t1 = tilt_g * imp_buf[i] + tilt_d * t1
         t2 = tilt_g * t1 + tilt_d * t2
         bus[i] = t2
 
@@ -200,7 +227,7 @@ def render(frames, sr=22050, rng=None, source="klglott88"):
     asp_noise = np.asarray(asp_n)
     noise_rms = float(np.sqrt(np.mean(asp_noise ** 2))) or 1.0
     voiced_bus = bus[voiced]
-    voiced_rms = float(np.sqrt(np.mean(voiced_bus ** 2))) if voiced_bus.size else 0.035
+    voiced_rms = float(np.sqrt(np.mean(voiced_bus ** 2))) if voiced_bus.size else 0.045
     ah = np.asarray(fr.ah, dtype=float) * (voiced_rms / noise_rms) * ASP_SCALE
     bus = bus + ah * asp_noise
 
@@ -240,7 +267,7 @@ def render(frames, sr=22050, rng=None, source="klglott88"):
     if raw_gain.shape[0] > 0:
         g_cur = raw_gain[0].copy()
         for h_i in range(raw_gain.shape[0]):
-            g_cur = 0.85 * g_cur + 0.15 * raw_gain[h_i]
+            g_cur = 0.90 * g_cur + 0.10 * raw_gain[h_i]
             gain[h_i] = g_cur
 
     # Keep the nasal pole-zero pair running on every sample: when non-nasal,
