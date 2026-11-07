@@ -33,8 +33,24 @@ INHERENT_DUR: dict[str, float] = {
     "CH": 0.095, "Z": 0.085, "ZH": 0.090, "V": 0.080, "DH": 0.070,
     "JH": 0.085,
     "P": 0.090, "B": 0.085, "T": 0.085, "D": 0.080, "K": 0.090, "G": 0.085,
+    "DX": 0.030,  # alveolar flap (American "water", "little")
     # diphthongs (sam.py DIPHTHONGS durations); treated as single vowel nuclei
     "AY": 0.165, "EY": 0.150, "OW": 0.155, "OY": 0.170, "AW": 0.160,
+}
+
+# Klatt phone-specific minimum durations (s): the affine duration floor each
+# phone is compressed against, so stressed/lengthened phones keep their
+# relative shape while short phones never collapse.
+MIN_DUR: dict[str, float] = {
+    "AX": 0.028, "IH": 0.036, "UH": 0.040, "EH": 0.045, "AH": 0.042,
+    "IY": 0.050, "AE": 0.055, "AA": 0.055, "AO": 0.055, "UW": 0.050,
+    "ER": 0.050,
+    "AY": 0.080, "EY": 0.075, "OW": 0.075, "OY": 0.080, "AW": 0.080,
+    "DX": 0.022, "P": 0.048, "B": 0.045, "T": 0.046, "D": 0.045,
+    "K": 0.048, "G": 0.045, "M": 0.038, "N": 0.035, "NG": 0.040,
+    "L": 0.032, "R": 0.032, "W": 0.030, "Y": 0.030, "S": 0.045,
+    "SH": 0.048, "F": 0.040, "TH": 0.038, "HH": 0.032, "CH": 0.048,
+    "Z": 0.040, "ZH": 0.042, "V": 0.036, "DH": 0.030, "JH": 0.045,
 }
 
 VOWELS = frozenset({
@@ -54,8 +70,8 @@ SENTENCE_GAP = "__"
 
 # Duration constants
 BASE_SPEED = 72.0
-WORD_GAP_S = 0.070
-SENTENCE_PAUSE_S = {3: 0.150, 4: 0.300}  # by boundary; default is the BI4 value
+WORD_GAP_S = 0.035
+SENTENCE_PAUSE_S = {3: 0.110, 4: 0.210}  # by boundary; default is the BI4 value
 VOWEL_INCOMP = 0.42
 CONSONANT_INCOMP = 0.60
 TOTAL_CAP = 2.0
@@ -220,7 +236,8 @@ def plan(phones: Sequence[Any], voice: Any) -> tuple[list[float], np.ndarray]:
             mult[vj] *= 1.2
 
     for s, vj in vowel_of_syl.items():                                    # vowel context
-        if vj + 1 < n and not _is_gap(names[vj + 1]):
+        if (vj + 1 < n and not _is_gap(names[vj + 1])
+                and phones[vj + 1].word == phones[vj].word):
             nxt = names[vj + 1]
             if nxt in VOICED_FRICATIVES:
                 mult[vj] *= 1.6
@@ -228,13 +245,49 @@ def plan(phones: Sequence[Any], voice: Any) -> tuple[list[float], np.ndarray]:
                 mult[vj] *= 1.2
             elif nxt in NASALS:
                 mult[vj] *= 0.85
+            elif nxt in VOICELESS_OBS:
+                mult[vj] *= 0.86                                          # pre-fortis clipping
 
-    # rate compression with incompressibility floor: new = floor + I*(dur*rate)
+    # Stress-foot compression (Klatt/SAM connect): unstressed syllables
+    # between stresses crowd each other; the more of them share a foot, the
+    # more each one shortens.
+    stressed_syls = {s for s, vj in sorted(vowel_of_syl.items())
+                     if phones[vj].stress > 0}
+    foot_size: dict[int, int] = {}
+    run: list[int] = []
+    for s in sorted(vowel_of_syl):
+        if s in stressed_syls:
+            for u in run:
+                foot_size[u] = min(len(run), 4)
+            run = []
+        else:
+            run.append(s)
+            if s in final_bi:                                     # clause end
+                for u in run:
+                    foot_size[u] = min(len(run), 4)
+                run = []
+    for u in run:
+        foot_size[u] = min(len(run), 4)
+    for s, cnt in foot_size.items():
+        if cnt > 0:
+            f = 1.0 / math.sqrt(1.0 + 0.25 * cnt)
+            for i in members[s]:
+                mult[i] *= f
+
+    for i in speech:                                                      # stop + liquid
+        if (names[i] in {"L", "R", "W", "Y"} and i > 0
+                and names[i - 1] in STOPS and phones[i].word == phones[i - 1].word):
+            mult[i] *= 0.75
+
+    # rate compression with incompressibility floor and Klatt phone-specific
+    # minimum duration: d = d_min + (base - d_min)*mult, floored at 75% d_min.
     dur = np.zeros(n)
     for i in speech:
         incomp = VOWEL_INCOMP if names[i] in VOWELS else CONSONANT_INCOMP
-        d = base[i] * mult[i]
-        dur[i] = (1.0 - incomp) * d + incomp * d * time_scale
+        d_min = MIN_DUR.get(names[i], 0.035)
+        d = d_min + max(0.0, base[i] - d_min) * mult[i]
+        floor = 0.045 if names[i] in STOPS else 0.75 * d_min
+        dur[i] = max(floor, ((1.0 - incomp) * d + incomp * d * time_scale))
 
     speech_idx = np.array(speech, dtype=np.int64)
     speech_total = float(dur[speech_idx].sum())
@@ -248,6 +301,11 @@ def plan(phones: Sequence[Any], voice: Any) -> tuple[list[float], np.ndarray]:
             dur[i] = WORD_GAP_S * time_scale
         elif names[i] == SENTENCE_GAP:
             dur[i] = SENTENCE_PAUSE_S.get(phones[i].boundary, SENTENCE_PAUSE_S[4]) * time_scale
+
+    # Quantize every duration to an exact integer multiple of the frame
+    # (at least 1 frame) so frames.build's per-phone frame sums match the
+    # total frame count with zero drift.
+    dur = np.maximum(1.0, np.round(dur * FRAME_HZ)) / FRAME_HZ
 
     ends = np.cumsum(dur)
     starts = ends - dur

@@ -27,10 +27,15 @@ VOWELS = {
 FUNCTION_WORDS = {
     "a", "an", "the", "of", "to", "and", "or", "but", "is", "are", "was",
     "were", "be", "been", "am", "in", "on", "at", "for", "with", "by",
-    "from", "as", "that", "this", "it", "its", "his", "her", "our", "their",
-    "my", "your", "we", "you", "he", "she", "they", "i", "me", "him", "them",
-    "us", "do", "does", "did", "will", "would", "can", "could", "should",
+    "from", "as", "that", "this", "it", "its", "his", "her", "their",
+    "me", "him", "them", "us", "do", "does", "did", "will", "would", "can",
+    "could", "should",
 }
+
+# Function words keep their full (citation) vowel when stranded at the end of
+# a clause ("To be or not to.", "What is it for?") instead of reducing.
+UNREDUCED_FINAL = {"to": "T UW", "for": "F AO R", "from": "F R AH M",
+                   "of": "AH V", "are": "AA R", "was": "W AH Z"}
 
 WORD_GAP = "_"
 SENTENCE_GAP = "__"
@@ -50,15 +55,15 @@ LEXICON = {
     "automatic": "AO T AX M AE T IH K", "mouth": "M AW TH",
     "robot": "R OW B AO T", "little": "L IH T AX L", "drift": "D R IH F T",
     "king": "K IH NG", "voices": "V OY S IH Z", "own": "OW N",
-    "the": "DH AX", "a": "AX", "of": "AH V", "one": "W AH N", "two": "T UW",
-    "you": "Y UW", "your": "Y AO R", "are": "AA R", "is": "IH Z",
-    "was": "W AH Z", "what": "W AH T", "who": "HH UW", "watch": "W AA CH",
-    "out": "AW T", "for": "F AO R", "that": "DH AE T", "quick": "K W IH K",
+    "the": "DH AX", "a": "AX", "of": "AX V", "one": "W AH N", "two": "T UW",
+    "you": "Y UW", "your": "Y AO R", "are": "ER", "is": "IH Z",
+    "was": "W AX Z", "what": "W AH T", "who": "HH UW", "watch": "W AA CH",
+    "out": "AW T", "for": "F ER", "that": "DH AE T", "quick": "K W IH K",
     "brown": "B R AW N", "fox": "F AA K S", "jumps": "JH AH M P S",
     "over": "OW V ER", "lazy": "L EY Z IY", "dog": "D AO G", "god": "G AA D",
     "oh": "OW", "my": "M AY", "whoa": "W OW", "needs": "N IY D Z",
-    "build": "B IH L D", "our": "AW ER", "from": "F R AH M", "and": "AE N D",
-    "to": "T UW", "let": "L EH T", "us": "AH S", "i": "AY", "come": "K AH M",
+    "build": "B IH L D", "our": "AW ER", "from": "F R AX M", "and": "AX N D",
+    "to": "T AX", "let": "L EH T", "us": "AH S", "i": "AY", "come": "K AH M",
     "some": "S AH M", "done": "D AH N", "love": "L AH V", "give": "G IH V",
     "have": "HH AE V", "live": "L IH V", "move": "M UW V", "nine": "N AY N",
     "eight": "EY T", "seven": "S EH V AX N", "six": "S IH K S",
@@ -72,6 +77,9 @@ LEXICON = {
     "no": "N OW", "me": "M IY", "car": "K AA R", "that's": "DH AE T S",
     "be": "B IY", "he": "HH IY", "she": "SH IY", "we": "W IY",
     "do": "D UW", "go": "G OW", "so": "S OW", "by": "B AY",
+    "an": "AX N", "am": "AE M", "in": "IH N", "on": "AA N", "at": "AE T",
+    "with": "W IH DH", "not": "N AA T", "said": "S EH D", "can": "K AE N",
+    "will": "W IH L", "water": "W AO DX ER", "better": "B EH DX ER",
 }
 
 RULES: list[tuple[str, str]] = [
@@ -123,21 +131,30 @@ _TOKENS = re.compile(r"\|([A-Z]+)\||([a-z])")
 
 def _word_phonemes(word: str) -> list[str]:
     if word in LEXICON:
-        return LEXICON[word].split()
-    s = word
-    for pat, rep in RULES:
-        s = re.sub(pat, rep, s)
-    out: list[str] = []
-    for m in _TOKENS.finditer(s):
-        marker, letter = m.group(1), m.group(2)
-        if marker:
-            out.extend(marker.split())
-        elif letter:
-            out.extend(LETTERS[letter].split())
-    if out and not any(p in VOWELS for p in out):
-        # Consonant-only token (e.g. "dr", "tv", "shh", "hmm"): insert a
-        # neutral schwa nucleus so every word forms a valid syllable.
-        out.append("AX")
+        out = LEXICON[word].split()
+    else:
+        s = word
+        for pat, rep in RULES:
+            s = re.sub(pat, rep, s)
+        out = []
+        for m in _TOKENS.finditer(s):
+            marker, letter = m.group(1), m.group(2)
+            if marker:
+                out.extend(marker.split())
+            elif letter:
+                out.extend(LETTERS[letter].split())
+        if out and not any(p in VOWELS for p in out):
+            # Consonant-only token (e.g. "dr", "tv", "shh", "hmm"): insert a
+            # neutral schwa nucleus so every word forms a valid syllable.
+            out.append("AX")
+    # Intervocalic alveolar flapping: T/D between a full vowel and a
+    # weak/reduced vowel becomes a flap (American English "water", "little",
+    # "automatic").
+    if len(out) >= 3:
+        for idx in range(1, len(out) - 1):
+            if (out[idx] in ("T", "D") and out[idx - 1] in VOWELS
+                    and out[idx + 1] in ("AX", "IH", "ER")):
+                out[idx] = "DX"
     return out
 
 
@@ -166,14 +183,23 @@ def reciter(text: str) -> list[Phone]:
 
     phones: list[Phone] = []
     syl_counter = 0
+    word_counter = 0
     for ci, (body, bi) in enumerate(clauses):
         words = [w.replace("'", "") for w in re.findall(r"[a-z']+", body)]
         words = [w for w in words if w]
-        for wi, word in enumerate(words):
+        if not words:
+            continue
+        clause_start = len(phones)
+        for wi_idx, word in enumerate(words):
             phs = _word_phonemes(word)
             if not phs:
                 continue
-            stressed = word not in FUNCTION_WORDS and len(word) > 1
+            wi = word_counter
+            word_counter += 1
+            stressed = word not in FUNCTION_WORDS
+            if wi_idx == len(words) - 1 and word in UNREDUCED_FINAL:
+                phs = UNREDUCED_FINAL[word].split()
+                stressed = True
             vowel_positions = [k for k, p in enumerate(phs) if p in VOWELS]
             # Primary stress: the first vowel of a content word, except that
             # two-syllable words with a final long vowel keep it on that vowel.
@@ -192,8 +218,13 @@ def reciter(text: str) -> list[Phone]:
                     syl=syl_counter - 1 if is_vowel else max(first_syl, syl_counter - 1),
                     word=wi,
                 ))
-            if wi < len(words) - 1:
-                phones.append(Phone(WORD_GAP, 0, -1, wi))
+            # Words inside a clause connect directly: no inter-word silence.
+        # Every clause needs an accent peak: if no vowel in this clause got
+        # stress (e.g. a clause of nothing but function words), accent the
+        # last vowel.
+        clause_vowels = [p for p in phones[clause_start:] if p.name in VOWELS]
+        if clause_vowels and not any(p.stress > 0 for p in clause_vowels):
+            clause_vowels[-1].stress = 1
         # Nuclear stress: the last stressed vowel of the final clause.
         if ci == len(clauses) - 1:
             for p in reversed(phones):
