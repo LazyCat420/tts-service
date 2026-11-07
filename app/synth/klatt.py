@@ -79,8 +79,20 @@ def _branch_gains(form, bws, f0b, oqb, tiltb, amps, sr):
     0.50 / 6.0 dB), and two steps of complex inter-branch skirt decoupling so
     steady vowel harmonic peaks land on `amps` (`FORMANT_AMP`).
     """
-    f0b = np.asarray(f0b, dtype=float)[:, None]
-    hz = np.where(f0b > 0.0, np.round(form / np.maximum(f0b, 1e-9)) * f0b, form)
+    f0_1d = np.asarray(f0b, dtype=float)
+    f0b = f0_1d[:, None]
+    if form.shape[0] > 1:
+        df = np.max(np.abs(np.diff(form, axis=0, prepend=form[:1])), axis=1)
+        df0 = np.abs(np.diff(f0_1d, prepend=f0_1d[:1]))
+        act = np.maximum(df / 0.02, df0 / 0.001)
+        act = np.where(f0_1d > 0.0, act, 10.0)
+        pad_a = np.pad(act, 2, mode="edge")
+        act_loc = np.maximum.reduce([pad_a[k:k + len(act)] for k in range(5)])
+        w_stat = np.exp(-(act_loc ** 2))[:, None]
+    else:
+        w_stat = np.where(f0b > 0.0, 1.0, 0.0)
+    hz_harm = np.where(f0b > 0.0, np.round(form / np.maximum(f0b, 1e-9)) * f0b, form)
+    hz = w_stat * hz_harm + (1.0 - w_stat) * form
     hz = np.maximum(hz, 1.0)
     w = 2.0 * np.pi * hz / sr
     d = math.exp(-2.0 * math.pi * TILT_HZ / sr)
@@ -96,7 +108,17 @@ def _branch_gains(form, bws, f0b, oqb, tiltb, amps, sr):
         np.asarray(oqb, dtype=float) - 0.50
     )
     tilt_mult = (form / np.maximum(form[:, :1], 1.0)) ** (-delta_tilt[:, None] / 18.0)
-    tgt = amps[None, :] * tilt_mult
+    win_cal = int(0.046 * sr)
+    df_bin = sr / max(win_cal, 1)
+    db = np.abs(hz_harm / df_bin - np.round(hz_harm / df_bin))
+    db = np.clip(db, 0.0, 0.499)
+    scallop = np.where(
+        db < 1e-6,
+        1.0,
+        (np.sin(math.pi * db) / (math.pi * db)) / np.maximum(1.0 - db * db, 1e-6),
+    )
+    scallop_rel = scallop / np.maximum(scallop[:, :1], 1e-6)
+    tgt = amps[None, :] * tilt_mult * (scallop_rel ** (-w_stat))
 
     res_diag = _frames.resonator_mag(hz, form, bws, sr)
     lvl = res_diag * src
@@ -167,7 +189,6 @@ def render(frames, sr=22050, rng=None, source="klglott88"):
     dt = 0.0
     ar_j = ar_s = 0.0
     k_ar = math.sqrt(1.0 - 0.99 ** 2)
-    t1 = t2 = 0.0
     tilt_d = math.exp(-2.0 * math.pi * TILT_HZ / sr)
     tilt_g = 1.0 - tilt_d
     for i in range(n):
@@ -206,6 +227,15 @@ def render(frames, sr=22050, rng=None, source="klglott88"):
                         j = i + m
                         if 0 <= j < n + 8:
                             imp_buf[j] += taps[m + 3] * scale
+
+    # Pass 2: run the two-pole source-tilt filter only after every 8-tap
+    # impulse has been deposited. The old single-pass loop filtered imp_buf[i]
+    # in the same iteration that deposited the closure at i, so the pre-taps
+    # m = -3, -2, -1 landed on already-consumed past samples and were silently
+    # dropped — a read-before-write bug that skewed the sub-sample closure
+    # position by up to 3 samples and smeared the harmonic structure.
+    t1 = t2 = 0.0
+    for i in range(n):
         t1 = tilt_g * imp_buf[i] + tilt_d * t1
         t2 = tilt_g * t1 + tilt_d * t2
         bus[i] = t2

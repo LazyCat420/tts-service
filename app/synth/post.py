@@ -163,12 +163,12 @@ def ltas_tilt(x: np.ndarray, sr: int, kind: str = "neutral",
         m = (freqs >= lo) & (freqs < hi)
         levels.append(10.0 * math.log10(float(np.mean(psd[m])) + 1e-20) if m.any() else -100.0)
     levels = np.asarray(levels)
-    above = centres >= pivot
+    above = (centres >= pivot) & (centres <= 4000.0)
     if above.sum() < 2:
         return x
     fit = np.polyfit(np.log2(centres[above]), levels[above], 1)
     delta = max(-limit_db, min(limit_db, slope - float(fit[0])))
-    corr_db = np.clip(delta * np.log2(np.maximum(centres, 1.0) / pivot), -limit_db, limit_db)
+    corr_db = np.clip(delta * np.log2(np.maximum(centres, pivot) / pivot), -limit_db, limit_db)
     gain = 10.0 ** (np.interp(freqs, centres, corr_db) / 20.0)
     return _stft_apply(x, sr, gain)
 
@@ -284,7 +284,7 @@ def finish(x: np.ndarray, sr: int, voice: dict | None = None) -> np.ndarray:
     """Run the post chain described by `voice['post']`."""
     v = voice or {}
     post = v.get("post", {})
-    default_celp = 0.0 if float(v.get("whisper", 0.0)) > 0.0 else 0.45
+    default_celp = 0.0 if float(v.get("whisper", 0.0)) > 0.0 else 0.20
     y = np.asarray(x, float)
     y = deess(y, sr, float(post.get("deess", 0.0)))
     y = ltas_tilt(y, sr, post.get("ltas", "neutral"))

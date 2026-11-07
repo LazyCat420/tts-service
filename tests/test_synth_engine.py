@@ -121,6 +121,18 @@ class TestSynthEngine(unittest.TestCase):
             self.assertEqual(g["crackle"], 0, f"{name} had crackle={g['crackle']}")
             self.assertLessEqual(g["peak"], 0.981)
 
+        sam_audio = synth_manager.render(
+            "SAM. I am a little robot. I come from 1982.", "SAM")
+        g_sam = measure.guards(sam_audio, synth_manager.SAMPLE_RATE)
+        self.assertGreaterEqual(g_sam["harm"], 0.85)
+        self.assertGreaterEqual(g_sam["hnr_db"], 8.0)
+        self.assertEqual(g_sam["crackle"], 0)
+        if hasattr(measure, "calibrate"):
+            cal = measure.calibrate(sam_audio, synth_manager.SAMPLE_RATE)
+            self.assertGreaterEqual(cal["spec_hnr_db"], 14.0)
+            self.assertGreaterEqual(cal["comb_lo_db"], 30.0)
+            self.assertLessEqual(cal["valley_floor_db"], -18.0)
+
     def test_http_endpoints(self) -> None:
         from fastapi.testclient import TestClient
         import main
