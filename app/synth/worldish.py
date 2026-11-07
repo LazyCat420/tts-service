@@ -33,7 +33,7 @@ NASAL_ZERO_BW = 100.0
 FRIC_CENTRES = np.array([500.0, 1000.0, 1800.0, 2800.0, 3800.0, 4900.0])
 MVN_EDGES = np.array([0.0, 500.0, 1500.0, 3000.0, 6000.0, np.inf])
 MVN_TD = 4
-VOICED_AP_FLOOR = 0.05
+VOICED_AP_FLOOR = 0.015
 ASP_POLE = 0.75
 ASP_KERNEL_LEN = 60
 BYPASS_LP_PASS_HZ = 4000.0
@@ -166,8 +166,8 @@ def _envelope(frames: Frames, sr: int, tb: dict) -> np.ndarray:
     for k in range(5):
         centre = formants[:, k:k + 1]
         bw = bws[:, k:k + 1]
-        hk = np.where(f0 > 0, np.maximum(1.0, np.round(centre / np.maximum(f0, 1.0))) * f0, centre)
-        lvl_k = resonator_mag(hk, centre, bw, sr) * _src_at(hk)
+        hk_harm = np.where(f0 > 0, np.maximum(1.0, np.round(centre / np.maximum(f0, 1.0))) * f0, centre)
+        lvl_k = 0.5 * (resonator_mag(hk_harm, centre, bw, sr) * _src_at(hk_harm)) + 0.5 * (resonator_mag(centre, centre, bw, sr) * _src_at(centre))
         if k == 0:
             lvl_0 = lvl_k
         tilt_mult = (centre / f1_ref) ** (-delta_tilt / 18.0)
