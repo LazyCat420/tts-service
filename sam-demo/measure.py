@@ -282,6 +282,353 @@ def guards(x: np.ndarray, sr: int) -> dict:
     }
 
 
+# ── spectrogram calibration metrics ─────────────────────────────────────────
+
+
+def _voiced_frames(x: np.ndarray, sr: int, n_fft: int = 2048, hop: int = 256,
+                   ac_thr: float = 0.30, rms_rel: float = 0.3,
+                   fmin: float = 60.0, fmax: float = 400.0):
+    """Voiced STFT frames: active-frames-relative RMS, Boersma lag
+    correlation >= ac_thr over [fmin, fmax], YIN F0 in [fmin, fmax].
+
+    Returns (frames, frame_indices, centres, f0s, hann_window)."""
+    x = np.asarray(x, float)
+    fr = _frames(x, n_fft, hop)
+    if fr.shape[0] == 0:
+        return fr, np.zeros(0, int), np.zeros(0, int), np.zeros(0), None
+    rms = np.sqrt(np.mean(fr ** 2, axis=1))
+    active = rms[rms > 0.05]
+    med = float(np.median(active)) if active.size else 0.0
+    if med <= 0.0:
+        return fr[:0], np.zeros(0, int), np.zeros(0, int), np.zeros(0), None
+    lo, hi = int(sr / fmax), int(sr / fmin)
+    track = f0_track(x, sr, fmin=fmin, fmax=fmax)
+    hop_s = int(0.01 * sr)
+    hann = _hann(n_fft)
+    idx, ctrs, f0s = [], [], []
+    for i in range(fr.shape[0]):
+        if rms[i] < rms_rel * med:
+            continue
+        if _norm_ac_peak(fr[i], lo, hi) < ac_thr:
+            continue
+        c = i * hop + n_fft // 2
+        t0 = max(0, c // hop_s - 5)
+        t1 = min(len(track), c // hop_s + 6)
+        v = track[t0:t1]
+        v = v[v > 0]
+        f0 = float(np.median(v)) if v.size else 0.0
+        if not (fmin <= f0 <= fmax):
+            continue
+        idx.append(i)
+        ctrs.append(c)
+        f0s.append(f0)
+    return fr, np.array(idx, int), np.array(ctrs, int), np.array(f0s), hann
+
+
+def comb_metrics(x: np.ndarray, sr: int, n_fft: int = 2048, hop: int = 256,
+                 fmax_harm: float = 4000.0, split_hz: float = 1000.0) -> dict:
+    """Harmonic comb sharpness and inter-harmonic valley depth (dB).
+
+    Per voiced frame, every harmonic k*F0 below fmax_harm is scored as its
+    +-1-bin spectral peak against the deepest valley in the plateau at
+    (k-0.5)*F0 (+-12% of F0).  comb_lo_db / comb_hi_db average the
+    peak-to-valley depth below / above split_hz (the tilt-limited upper band
+    behaves differently); comb_width_hz is the mean 3-dB width of harmonic
+    peaks (sharpness -- add ~40% for the Hann main lobe at n_fft=2048);
+    valley_floor_db is the mean valley level relative to the harmonic peak
+    level, the power-domain floor that rises under channel noise.
+    """
+    fr, idx, ctrs, f0s, hann = _voiced_frames(x, sr, n_fft, hop)
+    if fr.shape[0] == 0 or idx.size == 0:
+        return {"comb_lo_db": 0.0, "comb_hi_db": 0.0,
+                "comb_width_hz": 0.0, "valley_floor_db": 0.0, "n_voiced": 0}
+    binhz = sr / n_fft
+    d_lo, d_hi, wid, floors = [], [], [], []
+    for i, f0 in zip(idx, f0s):
+        S = 20.0 * np.log10(np.abs(np.fft.rfft(fr[i] * hann)) + 1e-9)
+        nb = len(S)
+        for k in range(1, int(fmax_harm / f0) + 1):
+            b = k * f0 / binhz
+            if b < 2 or b > nb - 3:
+                break
+            pk = float(np.max(S[int(b) - 1:int(b) + 2]))
+            pb = int(b)
+            w3 = 1
+            j = pb - 1
+            while j >= 0 and S[j] > pk - 3.0:
+                w3 += 1
+                j -= 1
+            j = pb + 1
+            while j < nb and S[j] > pk - 3.0:
+                w3 += 1
+                j += 1
+            plo = max(2, int((k - 0.62) * f0 / binhz))
+            phi = min(nb - 2, int((k - 0.38) * f0 / binhz))
+            if phi <= plo:
+                continue
+            vl = float(np.min(S[plo:phi + 1]))
+            (d_lo if k * f0 <= split_hz else d_hi).append(pk - vl)
+            wid.append(w3 * binhz)
+            floors.append(vl - pk)
+    f = lambda a: float(round(np.mean(a), 1)) if a else 0.0
+    return {"comb_lo_db": f(d_lo), "comb_hi_db": f(d_hi),
+            "comb_width_hz": f(wid), "valley_floor_db": f(floors),
+            "n_voiced": int(idx.size)}
+
+
+def _longest_steady(x: np.ndarray, sr: int, win: int = 4096,
+                    tol: float = 0.03, min_len: int = 4):
+    """Longest run of YIN-voiced frames whose F0 is within tol of its median.
+    Returns (window-centred segment of win samples, f0_median, dur_s)."""
+    track = f0_track(x, sr)
+    best = (0, 0, 0.0)
+    i, n = 0, len(track)
+    while i < n:
+        if track[i] > 0:
+            j = i
+            while j < n and track[j] > 0:
+                j += 1
+            seg = track[i:j]
+            if len(seg) >= min_len:
+                med = float(np.median(seg))
+                stable = np.where(np.abs(seg / med - 1.0) < tol)[0]
+                k = 0
+                while k < len(stable):
+                    m = k
+                    while m + 1 < len(stable) and stable[m + 1] == stable[m] + 1:
+                        m += 1
+                    if m - k + 1 > best[1]:
+                        best = (i + stable[k], m - k + 1, med)
+                    k = m + 1
+            i = j
+        else:
+            i += 1
+    st, L, f0 = best
+    if L == 0:
+        return None, 0.0, 0.0
+    c = int((st + L / 2) * 0.01 * sr)
+    s0 = max(0, c - win // 2)
+    w0 = max(0, int(s0 / (0.01 * sr)))
+    w1 = min(len(track), int((s0 + win) / (0.01 * sr)) + 1)
+    w_v = track[w0:w1]
+    w_v = w_v[w_v > 0]
+    if w_v.size > 0:
+        f0 = float(np.median(w_v))
+    seg = x[s0:s0 + win]
+    if len(seg) < win:
+        seg = np.pad(seg, (0, win - len(seg)))
+    return seg, f0, L * 0.01
+
+
+def modulation_sidebands(x: np.ndarray, sr: int, n_fft: int = 4096,
+                         bands: tuple[tuple[float, float], ...] =
+                         ((6.0, 70.0), (140.0, 260.0))) -> dict:
+    """AM/FM modulation sideband excess, dB, around harmonics on the longest
+    F0-stable voiced run.
+
+    For each harmonic below 3 kHz the mean power in the offset bands (sidebands
+    only: the +-3-bin main lobe and bins within 2 bins of ANY other harmonic
+    are masked out) is differenced with the harmonic peak.  The low band
+    (6-70 Hz) captures jitter/shimmer/pumping/hum sidebands; the frame band
+    (140-260 Hz) captures spectral modulation at the synthesiser frame/hop
+    update rate.  Clean periodic speech reads at the window-skirt floor
+    (about -14 dB at n_fft=4096 Hann for these engines); channel-like
+    distortion reads >= -10 dB.
+    """
+    seg, f0, durs = _longest_steady(x, sr, n_fft)
+    out = {"sb_f0": round(f0, 1), "sb_dur": round(durs, 2)}
+    if seg is None:
+        for bi in range(len(bands)):
+            out[f"sb{bi}_db"] = 0.0
+        return out
+    binhz = sr / n_fft
+    S = 20.0 * np.log10(np.abs(np.fft.rfft(seg * _hann(n_fft))) + 1e-9)
+    harm = np.arange(1, int(4000.0 / f0) + 1) * f0 / binhz
+    for bi, (lo_hz, hi_hz) in enumerate(bands):
+        ex = []
+        for k in range(1, int(3000.0 / f0) + 1):
+            b = int(round(k * f0 / binhz))
+            if b > len(S) - 20:
+                break
+            pk = float(np.max(S[b - 1:b + 2]))
+            sel = []
+            for o in range(int(lo_hz / binhz), int(hi_hz / binhz) + 1):
+                for sgn in (1, -1):
+                    bb = b + sgn * o
+                    if bb < 0 or bb >= len(S) or abs(bb - b) <= 3:
+                        continue
+                    near = [h for h in harm if abs(h - b) > 2.0]
+                    if near and min(abs(h - bb) for h in near) <= 2.0:
+                        continue
+                    sel.append(S[bb])
+            if len(sel) >= 6:
+                ex.append(10.0 * np.log10(np.mean(10.0 ** (np.asarray(sel) / 10.0)))
+                          - pk)
+        out[f"sb{bi}_db"] = float(round(np.mean(ex), 1)) if ex else 0.0
+    return out
+
+
+def formant_prominence(x: np.ndarray, sr: int, n_fft: int = 2048,
+                       hop: int = 256) -> dict:
+    """F1/F2/F3 peak-to-valley prominence, dB, on the tilt-detrended,
+    harmonic-ripple-smoothed average power spectrum of voiced frames.
+
+    The 1/f source tilt of a pulse-train voice is removed by a linear fit of
+    the smoothed envelope over 100-4000 Hz, so the number measures true
+    formant contrast (intelligibility) rather than glottal tilt."""
+    fr, idx, ctrs, f0s, hann = _voiced_frames(x, sr, n_fft, hop)
+    out = {f"prom_F{i}": 0.0 for i in (1, 2, 3)}
+    if fr.shape[0] == 0 or idx.size == 0:
+        return out
+    binhz = sr / n_fft
+    acc = None
+    for i in idx:
+        m = np.abs(np.fft.rfft(fr[i] * hann)) ** 2
+        acc = m if acc is None else acc + m
+    logS = 10.0 * np.log10(acc / idx.size + 1e-18)
+    w = max(3, int(110.0 / binhz))                    # remove one F0 period
+    pad = np.pad(logS, w, mode="edge")
+    env = np.convolve(pad, np.ones(2 * w + 1) / (2 * w + 1), "same")[w:-w]
+    fb = np.arange(int(100.0 / binhz), min(int(4000.0 / binhz), len(env)))
+    coef = np.polyfit(fb * binhz / 1000.0, env[fb], 1)
+    env = env - np.polyval(coef, np.arange(len(env)) * binhz / 1000.0)
+    for name, lo, hi, ext in (("F1", 250.0, 900.0, 100.0),
+                              ("F2", 950.0, 2200.0, 200.0),
+                              ("F3", 2300.0, 3600.0, 200.0)):
+        blo, bhi = int(lo / binhz), min(int(hi / binhz), len(env) - 2)
+        seg = env[blo:bhi + 1]
+        if seg.size < 3:
+            continue
+        interior = [j for j in range(blo + 1, bhi) if env[j] >= env[j - 1] and env[j] >= env[j + 1]]
+        pb = max(interior, key=lambda j: float(env[j])) if interior else (blo + int(np.argmax(seg)))
+        pk = env[pb]
+        lv = env[max(1, int(150.0 / binhz)):pb]
+        rv = env[pb + 1:min(len(env) - 1, bhi + int(ext / binhz))]
+        vl = float(np.min(lv)) if lv.size else pk
+        vr = float(np.min(rv)) if rv.size else pk
+        out["prom_" + name] = float(round(pk - max(vl, vr), 1))
+    return out
+
+
+def sub_f0_rumble(x: np.ndarray, sr: int, n_fft: int = 2048, hop: int = 256,
+                  fc: float = 80.0) -> float:
+    """Mean dB re 80-4000 Hz of the energy below fc on voiced frames.
+    Authentic 1982 buzz sits near -24 dB; <= -55 dB is over-filtered; hum or
+    gated thump reads > -20 dB with matching sb0_db sidebands."""
+    fr, idx, ctrs, f0s, hann = _voiced_frames(x, sr, n_fft, hop)
+    if fr.shape[0] == 0 or idx.size == 0:
+        return 0.0
+    binhz = sr / n_fft
+    b_lo = max(2, int(fc / binhz))
+    b_hi = min(int(4000.0 / binhz), n_fft // 2)
+    vals = []
+    for i in idx:
+        P = np.abs(np.fft.rfft(fr[i] * hann)) ** 2
+        vals.append(10.0 * np.log10((np.sum(P[:b_lo]) + 1e-18)
+                                    / (np.sum(P[b_lo:b_hi]) + 1e-18)))
+    return float(round(np.mean(vals), 1)) if vals else 0.0
+
+
+def spectral_hnr(x: np.ndarray, sr: int, n_fft: int = 2048, hop: int = 256,
+                 fmax_harm: float = 4000.0) -> float:
+    """Power-domain harmonic-to-noise ratio, dB (grid-bias-free HNR).
+
+    The guards HNR uses integer-lag autocorrelation, which penalises
+    sample-grid-free (fractional-period) voices: an ideal pulse train at
+    period 200.45 samples reads ac=0.52 there while 200.0 reads 1.00.
+    This metric instead integrates power inside each harmonic (+-15% of F0)
+    and in the inter-harmonic plateaus (centres at (k-0.5)*F0, +-12% of F0)
+    over voiced frames and reports the ratio.  A clean periodic voice reads
+    12-25 dB; aperiodic channel noise pulls it toward 0 dB."""
+    fr, idx, ctrs, f0s, hann = _voiced_frames(x, sr, n_fft, hop)
+    if fr.shape[0] == 0 or idx.size == 0:
+        return 0.0
+    binhz = sr / n_fft
+    ratios = []
+    for i, f0 in zip(idx, f0s):
+        P = np.abs(np.fft.rfft(fr[i] * hann)) ** 2
+        hsum, vsum = 0.0, 0.0
+        for k in range(1, int(fmax_harm / f0) + 1):
+            c = k * f0 / binhz
+            if c > len(P) - 3:
+                break
+            h_lo = max(1, int(c - 0.15 * f0 / binhz))
+            h_hi = min(len(P) - 1, int(c + 0.15 * f0 / binhz))
+            vc = (k - 0.5) * f0 / binhz
+            v_lo = max(1, int(vc - 0.12 * f0 / binhz))
+            v_hi = min(len(P) - 1, int(vc + 0.12 * f0 / binhz))
+            if v_hi <= v_lo or h_hi <= h_lo:
+                continue
+            hsum += float(np.sum(P[h_lo:h_hi + 1]))
+            vsum += float(np.sum(P[v_lo:v_hi + 1]))
+        if vsum > 0.0:
+            ratios.append(10.0 * np.log10((hsum + 1e-18) / vsum))
+    return float(round(np.mean(ratios), 1)) if ratios else 0.0
+
+
+def closure_depth(x: np.ndarray, sr: int, win_ms: float = 10.0) -> dict:
+    """Stop-closure silence floor in dB below the voiced median RMS, plus the
+    longest silence run (ms).  Quantised noise-free synthesis reads <= -70 dB;
+    residual channel noise or gating pumping lifts the floor above ~-55 dB."""
+    y = np.asarray(x, float)
+    hop = max(1, int(win_ms / 1000.0 * sr))
+    n = len(y) // hop
+    if n == 0:
+        return {"closure_db": 0.0, "silence_ms": 0}
+    rms = np.sqrt(np.mean(y[:n * hop].reshape(n, hop) ** 2, axis=1))
+    act = np.where(rms > 0.05)[0]
+    if act.size == 0:
+        return {"closure_db": -96.0, "silence_ms": int(n * win_ms)}
+    inside = rms[act[0]:act[-1] + 1]
+    med_v = float(np.median(rms[act]))
+    nz = inside[inside > 0.0]
+    floor = float(np.percentile(nz, 2)) if nz.size else 0.0
+    mask = inside < max(floor * 3.0, 1e-9)
+    best = run = 0
+    for v in mask:
+        run = run + 1 if v else 0
+        best = max(best, run)
+    return {"closure_db": float(round(20.0 * np.log10((floor + 1e-12) / med_v), 1)),
+            "silence_ms": int(best * win_ms)}
+
+
+# Objective targets (legacy SAM measured / v2 measured -> required).
+CALIB_TARGETS = {
+    "comb_lo_db":     (20.0,  None),   # deep line-spectra valleys; v2 18.7 fails
+    "comb_hi_db":     (10.0,  None),   # v2 11.2 passes
+    "valley_floor_db": (None, -16.0),  # no inter-harmonic noise floor; v2 -13.0 fails
+    "spec_hnr_db":    (12.0,  None),   # grid-free harmonicity; v2 5.9 fails
+    "sb0_db":         (None, -12.0),   # AM/FM/hum sidebands; v2 -5.3 fails
+    "sb1_db":         (None,  -8.0),   # frame/hop-rate modulation; v2 -2.8 fails worst
+    "prom_F1":        (4.0, 9.0),      # easy-to-hear robot window; all pass
+    "prom_F2":        (2.0, 6.0),      # legacy -0.3 fails (v2 wins intelligibility)
+    "prom_F3":        (3.0, 16.0),     # legacy 4.1, v2 13.3 pass
+    "sub80_db":       (-55.0, -15.0),  # 1982-buzz band; v2 -49.5 pass, clinical edge
+    "closure_db":     (None, -65.0),   # clean stop closures; v2 -67.1 pass
+    "crackle":        (None, 0),       # zero clicks
+}
+
+
+def calibrate(x: np.ndarray, sr: int, targets: dict | None = None) -> dict:
+    """All spectrogram calibration metrics + guards + pass/fail vs targets."""
+    out = dict(guards(x, sr))
+    out.update(comb_metrics(x, sr))
+    out.update(modulation_sidebands(x, sr))
+    out.update(formant_prominence(x, sr))
+    out["sub80_db"] = sub_f0_rumble(x, sr)
+    out["spec_hnr_db"] = spectral_hnr(x, sr)
+    out.update(closure_depth(x, sr))
+    fails = {}
+    for key, (lo, hi) in (targets or CALIB_TARGETS).items():
+        val = out.get(key)
+        if val is None:
+            continue
+        if (lo is not None and val < lo) or (hi is not None and val > hi):
+            fails[key] = val
+    out["calib_fail"] = fails
+    return out
+
+
 def f0_stats(track: np.ndarray, hop_s: float = 0.01) -> dict:
     v = track[track > 0]
     if v.size < 2:

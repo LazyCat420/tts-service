@@ -64,7 +64,7 @@ def write_wav(path: str, x: np.ndarray, sr: int = SR) -> None:
 
 
 def row(x: np.ndarray, sr: int = SR) -> dict:
-    g = measure.guards(x, sr)
+    g = measure.calibrate(x, sr)
     g.update(measure.f0_stats(measure.f0_track(x, sr)))
     durs = measure.nuclei_durations(x, sr)
     g["rate_syl_s"] = round(len(durs) / max(g["dur_s"], 1e-6), 2)
@@ -112,21 +112,28 @@ def main() -> int:
 
 
 def _metrics_table(clips, legacy_row) -> str:
-    head = ("voice", "dur s", "F0 med", "span st", "harm", "HNR dB", "CPP dB",
+    head = ("voice", "dur s", "F0 med", "span st", "harm", "HNR dB", "spec HNR",
+            "comb dB", "valley dB", "CPP dB",
             ">5 kHz %", "crackle", "syl/s")
     rows = []
     for slug, voice, label, wav, m in clips:
         rows.append(
             f"<tr><td>{html.escape(label)}</td>"
             f"<td>{m['dur_s']}</td><td>{m['f0_med']}</td><td>{m['span_st']}</td>"
-            f"<td>{m['harm']}</td><td>{m['hnr_db']}</td><td>{m['cpp_db']}</td>"
+            f"<td>{m['harm']}</td><td>{m['hnr_db']}</td>"
+            f"<td>{m['spec_hnr_db']}</td><td>{m['comb_lo_db']}</td>"
+            f"<td>{m['valley_floor_db']}</td>"
+            f"<td>{m['cpp_db']}</td>"
             f"<td>{m['hi5k_pct']}</td><td>{m['crackle']}</td>"
             f"<td>{m['rate_syl_s']}</td></tr>")
     rows.append(
         f"<tr class=old><td>1982 SAM (legacy)</td>"
         f"<td>{legacy_row['dur_s']}</td><td>{legacy_row['f0_med']}</td>"
         f"<td>{legacy_row['span_st']}</td><td>{legacy_row['harm']}</td>"
-        f"<td>{legacy_row['hnr_db']}</td><td>{legacy_row['cpp_db']}</td>"
+        f"<td>{legacy_row['hnr_db']}</td>"
+        f"<td>{legacy_row['spec_hnr_db']}</td><td>{legacy_row['comb_lo_db']}</td>"
+        f"<td>{legacy_row['valley_floor_db']}</td>"
+        f"<td>{legacy_row['cpp_db']}</td>"
         f"<td>{legacy_row['hi5k_pct']}</td><td>{legacy_row['crackle']}</td>"
         f"<td>{legacy_row['rate_syl_s']}</td></tr>")
     return ("<table><thead><tr>"
